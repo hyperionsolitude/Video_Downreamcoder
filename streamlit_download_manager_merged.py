@@ -1030,24 +1030,43 @@ def main():
         st.success(f"Found {len(files)} video files.")
         st.info(f"Downloads will go to: {os.path.join(get_base_download_dir(), current_folder)}")
         
+        # Initialize selected files if not exists
+        if 'selected_files' not in st.session_state:
+            st.session_state['selected_files'] = []
+        
         # Select all/none buttons
         col_select, col_deselect = st.columns([1, 1])
         with col_select:
-            if st.button("Select All"):
+            if st.button("Select All", key="select_all_files"):
                 st.session_state['selected_files'] = [f['name'] for f in files]
                 st.rerun()
         with col_deselect:
-            if st.button("Deselect All"):
+            if st.button("Deselect All", key="deselect_all_files"):
                 st.session_state['selected_files'] = []
                 st.rerun()
         
-        # File multiselect
+        # File multiselect with better state management
+        def on_selection_change():
+            # This callback ensures the session state is updated immediately
+            st.session_state['selected_files'] = st.session_state['file_selector']
+        
         selected = st.multiselect(
             "Select files to download or stream:",
-            [f['name'] for f in files],
-            default=st.session_state.get('selected_files', [])
+            options=[f['name'] for f in files],
+            default=st.session_state.get('selected_files', []),
+            key='file_selector',
+            on_change=on_selection_change
         )
-        st.session_state['selected_files'] = selected
+        
+        # Ensure session state is always in sync
+        if selected != st.session_state.get('selected_files', []):
+            st.session_state['selected_files'] = selected
+        
+        # Show selection status
+        if selected:
+            st.info(f"📋 Selected {len(selected)} files: {', '.join(selected[:3])}{'...' if len(selected) > 3 else ''}")
+        else:
+            st.info("📋 No files selected")
         
         # Download button with concurrency info
         max_concurrency = st.session_state.get('max_concurrency', -1)
