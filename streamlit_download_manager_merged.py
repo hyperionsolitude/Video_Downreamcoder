@@ -598,7 +598,7 @@ def create_video_encoder_script(download_dir):
     
     if not os.path.exists(script_path):
         # Copy the original script
-        original_script = "/media/ubuntu/ST1000LM010/Downloads/video_encoder.sh"
+        original_script = os.path.join(os.path.dirname(__file__), "original", "video_encoder.sh")
         if os.path.exists(original_script):
             try:
                 shutil.copy2(original_script, script_path)

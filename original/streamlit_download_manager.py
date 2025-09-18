@@ -590,7 +590,7 @@ def list_episode_video_files_sorted(folder_path):
 
 def copy_video_encoder_script(download_dir):
     """Copy the video_encoder.sh script to the download directory"""
-    script_source = "/media/ubuntu/ST1000LM010/Downloads/video_encoder.sh"
+    script_source = os.path.join(os.path.dirname(__file__), "..", "video_encoder.sh")
     script_dest = os.path.join(download_dir, "video_encoder.sh")
     
     if os.path.exists(script_source) and not os.path.exists(script_dest):
