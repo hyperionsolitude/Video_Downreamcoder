@@ -591,6 +591,112 @@ def download_all_files(files, selected, download_dir, status_dict):
     thread.start()
     return thread
 
+async def prepare_streaming_urls(files, selected):
+    """Prepare direct URLs for streaming, handling YouTube URL extraction"""
+    urls = []
+    names = []
+    
+    for file in files:
+        if file['name'] in selected:
+            names.append(file['name'])
+            
+            # Get the actual URL for YouTube videos that need extraction
+            if file.get('needs_url_extraction') and file.get('is_youtube'):
+                direct_url = await get_youtube_direct_url(file['yt_webpage_url'], file.get('is_audio', False))
+                urls.append(direct_url)
+            else:
+                urls.append(file['url'])
+    
+    return urls, names
+
+async def get_youtube_direct_url(webpage_url, audio_only=False):
+    """Extract direct URL for a YouTube video when needed"""
+    ydl_opts = {
+        'quiet': True,
+        'skip_download': True,
+        'format': 'bestaudio[ext=mp3]/bestaudio/best' if audio_only else 'best[ext=mp4]/best',
+    }
+    
+    loop = asyncio.get_event_loop()
+    def run_yt():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(webpage_url, download=False)
+            if isinstance(info, dict) and 'url' in info:
+                return info['url']
+            return webpage_url
+    return await loop.run_in_executor(None, run_yt)
+
+def stream_all_in_vlc(urls, names):
+    """Stream files in VLC media player"""
+    terminal = st.session_state.terminal_output
+    terminal.add_line(f"Starting VLC streaming for {len(urls)} files", "info")
+    
+    try:
+        if sys.platform == "darwin":  # macOS
+            with tempfile.NamedTemporaryFile('w', suffix='.m3u', delete=False) as m3u:
+                for name, url in zip(names, urls):
+                    m3u.write(f'#EXTINF:-1,{name}\n{url}\n')
+                m3u_path = m3u.name
+            subprocess.Popen(["open", "-a", "VLC", m3u_path])
+            terminal.add_line("Launched VLC on macOS", "info")
+            
+        elif sys.platform == "win32":  # Windows
+            subprocess.Popen(["vlc"] + urls)
+            terminal.add_line("Launched VLC on Windows", "info")
+            
+        else:  # Linux
+            vlc_paths = ["vlc", "/snap/bin/vlc", "/usr/bin/vlc", "/usr/local/bin/vlc"]
+            vlc_found = False
+            
+            for vlc_path in vlc_paths:
+                try:
+                    result = subprocess.run([vlc_path, "--version"], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        terminal.add_line(f"Found VLC at: {vlc_path}", "info")
+                        
+                        # Try different interfaces
+                        vlc_interfaces = ["qt", "dummy"]
+                        for interface in vlc_interfaces:
+                            try:
+                                vlc_args = [vlc_path, "--intf", interface]
+                                if interface == "qt":
+                                    vlc_args.extend(["--no-video-title-show"])
+                                vlc_args.extend(urls)
+                                
+                                env = os.environ.copy()
+                                env['DISPLAY'] = ':0'
+                                
+                                process = subprocess.Popen(
+                                    vlc_args, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    env=env
+                                )
+                                
+                                time.sleep(2)
+                                if process.poll() is None:
+                                    terminal.add_line(f"VLC launched successfully with {interface} interface", "info")
+                                    vlc_found = True
+                                    break
+                                    
+                            except Exception as e:
+                                terminal.add_line(f"Failed to launch VLC with {interface}: {e}", "error")
+                                continue
+                        
+                        if vlc_found:
+                            break
+                            
+                except Exception as e:
+                    continue
+            
+            if not vlc_found:
+                raise Exception("VLC not found. Please install VLC: sudo apt install vlc")
+                
+    except Exception as e:
+        terminal.add_line(f"VLC streaming error: {e}", "error")
+        st.error(f"Failed to open VLC: {e}")
+        st.info("Make sure VLC is installed. On Linux: `sudo apt install vlc`")
+
 # --- VIDEO ENCODING FUNCTIONS ---
 def create_video_encoder_script(download_dir):
     """Create the video encoder script in the download directory"""
@@ -925,7 +1031,7 @@ def main():
         
         # File multiselect
         selected = st.multiselect(
-            "Select files to download:",
+            "Select files to download or stream:",
             [f['name'] for f in files],
             default=st.session_state.get('selected_files', [])
         )
@@ -963,6 +1069,25 @@ def main():
                 
                 # Start download thread
                 download_thread = download_all_files(files_to_download, [f['name'] for f in files_to_download], download_dir, st.session_state['file_status'])
+        
+        # Stream button
+        col_stream, col_spacer = st.columns([1, 3])
+        with col_stream:
+            if st.button("🎬 Stream in VLC"):
+                if not selected:
+                    st.warning("No files selected for streaming!")
+                else:
+                    with st.spinner("Preparing streaming URLs..."):
+                        try:
+                            urls, names = asyncio.run(prepare_streaming_urls(files, selected))
+                            if urls:
+                                stream_all_in_vlc(urls, names)
+                                st.success(f"✅ Launched VLC with {len(urls)} files!")
+                                st.info("Check your system for the VLC media player window.")
+                            else:
+                                st.error("No valid URLs found for streaming!")
+                        except Exception as e:
+                            st.error(f"Failed to prepare streaming: {e}")
                 
                 # Show progress
                 progress_bar = st.progress(0)
