@@ -591,21 +591,33 @@ def download_all_files(files, selected, download_dir, status_dict):
     thread.start()
     return thread
 
-async def prepare_streaming_urls(files, selected):
-    """Prepare direct URLs for streaming, handling YouTube URL extraction"""
+async def prepare_streaming_urls(files, selected, download_dir):
+    """Prepare URLs for streaming, prioritizing local files over network streams"""
     urls = []
     names = []
+    terminal = st.session_state.terminal_output
     
     for file in files:
         if file['name'] in selected:
             names.append(file['name'])
             
-            # Get the actual URL for YouTube videos that need extraction
-            if file.get('needs_url_extraction') and file.get('is_youtube'):
-                direct_url = await get_youtube_direct_url(file['yt_webpage_url'], file.get('is_audio', False))
-                urls.append(direct_url)
+            # First, check if file exists locally (prioritize local files)
+            local_file_path = os.path.join(download_dir, normalize_filename(file['name']))
+            
+            if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 1024:
+                # File exists locally and has reasonable size - stream from local
+                urls.append(f"file://{os.path.abspath(local_file_path)}")
+                terminal.add_line(f"Using local file: {file['name']}", "info")
             else:
-                urls.append(file['url'])
+                # File not downloaded or incomplete - stream from network
+                terminal.add_line(f"Streaming from network: {file['name']}", "info")
+                
+                # Get the actual URL for YouTube videos that need extraction
+                if file.get('needs_url_extraction') and file.get('is_youtube'):
+                    direct_url = await get_youtube_direct_url(file['yt_webpage_url'], file.get('is_audio', False))
+                    urls.append(direct_url)
+                else:
+                    urls.append(file['url'])
     
     return urls, names
 
@@ -1081,10 +1093,21 @@ def main():
                 else:
                     with st.spinner("Preparing streaming URLs..."):
                         try:
-                            urls, names = asyncio.run(prepare_streaming_urls(files, selected))
+                            urls, names = asyncio.run(prepare_streaming_urls(files, selected, download_dir))
                             if urls:
                                 stream_all_in_vlc(urls, names)
+                                
+                                # Count local vs network streams
+                                local_count = sum(1 for url in urls if url.startswith('file://'))
+                                network_count = len(urls) - local_count
+                                
                                 st.success(f"✅ Launched VLC with {len(urls)} files!")
+                                if local_count > 0 and network_count > 0:
+                                    st.info(f"📁 {local_count} local files, 🌐 {network_count} network streams")
+                                elif local_count > 0:
+                                    st.info(f"📁 Streaming {local_count} local files")
+                                else:
+                                    st.info(f"🌐 Streaming {network_count} files from network")
                                 st.info("Check your system for the VLC media player window.")
                             else:
                                 st.error("No valid URLs found for streaming!")
