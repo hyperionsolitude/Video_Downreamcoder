@@ -1050,6 +1050,9 @@ def main():
         
         st.info(concurrency_info)
         
+        # Ensure download directory exists
+        download_dir = ensure_download_dir(current_folder)
+        
         if st.button("Download Selected"):
             if not selected:
                 st.warning("No files selected for download!")
@@ -1057,7 +1060,6 @@ def main():
                 st.error("Downloads are disabled! Set max parallel downloads to a positive number or -1 for unlimited.")
             else:
                 st.session_state['is_downloading'] = True
-                download_dir = ensure_download_dir(current_folder)
                 files_to_download = [f for f in files if f['name'] in selected]
                 
                 # Show actual concurrency being used
@@ -1120,14 +1122,10 @@ def main():
                         st.success("🎉 All downloads completed!")
                         break
                 
-                # Copy video encoder script
-                create_video_encoder_script(download_dir)
         
         # Video encoding section
         st.markdown("---")
         st.markdown("### 🎬 Video Encoding & Merging")
-        
-        download_dir = ensure_download_dir(current_folder)
         video_files = list_video_files(download_dir)
         
         if video_files:
