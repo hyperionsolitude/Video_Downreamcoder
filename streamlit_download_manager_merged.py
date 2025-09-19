@@ -81,11 +81,28 @@ def get_folder_name_from_url(url, playlist_title=None):
 class TerminalOutput:
     def __init__(self):
         self.output_queue = queue.Queue()
-        self.max_lines = 50
+        self.max_lines = 100
+        self.command_count = 0
     
     def add_line(self, text, cmd_type="info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.output_queue.put(f"[{timestamp}] {text}")
+        
+        # Color coding based on type
+        if cmd_type == "command":
+            self.command_count += 1
+            formatted_text = f"<span style='color: #00ff00; font-weight: bold;'>[{timestamp}] $ {text}</span>"
+        elif cmd_type == "error":
+            formatted_text = f"<span style='color: #ff4444; font-weight: bold;'>[{timestamp}] ❌ {text}</span>"
+        elif cmd_type == "warning":
+            formatted_text = f"<span style='color: #ffaa00; font-weight: bold;'>[{timestamp}] ⚠️ {text}</span>"
+        elif cmd_type == "success":
+            formatted_text = f"<span style='color: #00ff88; font-weight: bold;'>[{timestamp}] ✅ {text}</span>"
+        elif cmd_type == "info":
+            formatted_text = f"<span style='color: #00aaff;'>[{timestamp}] ℹ️ {text}</span>"
+        else:
+            formatted_text = f"<span style='color: #ffffff;'>[{timestamp}] {text}</span>"
+        
+        self.output_queue.put(formatted_text)
     
     def get_output(self):
         lines = []
@@ -95,6 +112,14 @@ class TerminalOutput:
             except queue.Empty:
                 break
         return lines[-self.max_lines:]  # Keep only recent lines
+    
+    def clear(self):
+        """Clear the terminal output"""
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+            except queue.Empty:
+                break
 
 # Global terminal output instance
 if 'terminal_output' not in st.session_state:
@@ -578,21 +603,52 @@ def download_all_files(files, selected, download_dir, status_dict):
         import time
         
         def update_progress():
-            """Update progress during download"""
+            """Update progress during download with speed and ETA calculation"""
             start_time = time.time()
             last_progress = 0
+            last_size = 0
+            last_update_time = start_time
+            
             while status_dict[file_key]['status'] == 'downloading':
                 if os.path.exists(file_path):
                     current_size = os.path.getsize(file_path)
-                    # Estimate progress based on time elapsed (rough approximation)
-                    elapsed = time.time() - start_time
-                    # Assume average download takes 30 seconds, cap at 90%
-                    progress = min(90, int((elapsed / 30) * 100))
-                    # Only update if progress changed significantly (reduce flashing)
-                    if progress - last_progress >= 5 or progress == 90:
-                        status_dict[file_key]['progress'] = progress
-                        last_progress = progress
-                time.sleep(2)  # Check less frequently
+                    current_time = time.time()
+                    elapsed = current_time - start_time
+                    
+                    # Calculate download speed
+                    if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
+                        size_diff = current_size - last_size
+                        time_diff = current_time - last_update_time
+                        speed = size_diff / time_diff if time_diff > 0 else 0
+                        
+                        # Estimate progress based on time elapsed (more realistic)
+                        # Assume average download takes 60 seconds for better estimation
+                        progress = min(95, int((elapsed / 60) * 100))
+                        
+                        # Calculate ETA based on current speed
+                        if speed > 0:
+                            # Estimate total size based on current progress
+                            estimated_total = current_size / (progress / 100) if progress > 0 else current_size * 2
+                            remaining = max(0, estimated_total - current_size)
+                            eta = remaining / speed if speed > 0 else 0
+                        else:
+                            eta = 0
+                        
+                        # Only update if progress changed significantly (reduce flashing)
+                        if progress - last_progress >= 2 or progress == 95:
+                            status_dict[file_key].update({
+                                'progress': progress,
+                                'downloaded': current_size,
+                                'speed': speed,
+                                'eta': eta,
+                                'elapsed': elapsed
+                            })
+                            last_progress = progress
+                        
+                        last_size = current_size
+                        last_update_time = current_time
+                
+                time.sleep(0.5)  # Check more frequently for better updates
         
         # Start progress tracking thread
         progress_thread = threading.Thread(target=update_progress, daemon=True)
@@ -917,8 +973,90 @@ def encode_videos_shell(download_dir, output_file, preset="auto", quality="25"):
 
 # --- STREAMLIT UI ---
 def main():
-    st.set_page_config(page_title="Streamlit Download Manager", layout="wide")
-    st.title("📥 Streamlit Download Manager with Shell Integration")
+    st.set_page_config(
+        page_title="Streamlit Download Manager", 
+        layout="wide",
+        initial_sidebar_state="expanded",
+        page_icon="📥"
+    )
+    
+    # Custom CSS for better UI/UX
+    st.markdown("""
+    <style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+    }
+    .main-header h1 {
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: bold;
+    }
+    .main-header p {
+        margin: 0.5rem 0 0 0;
+        font-size: 1.2rem;
+        opacity: 0.9;
+    }
+    .status-card {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #007bff;
+        margin: 1rem 0;
+    }
+    .progress-container {
+        background: #ffffff;
+        padding: 1.5rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        margin: 1rem 0;
+    }
+    .file-item {
+        background: #f8f9fa;
+        padding: 0.8rem;
+        margin: 0.5rem 0;
+        border-radius: 6px;
+        border-left: 3px solid #28a745;
+    }
+    .terminal-container {
+        background: #1e1e1e;
+        color: #ffffff;
+        padding: 15px;
+        border-radius: 8px;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        line-height: 1.4;
+        max-height: 400px;
+        overflow-y: auto;
+        border: 1px solid #333;
+    }
+    .stButton > button {
+        background: linear-gradient(45deg, #667eea, #764ba2);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Main header
+    st.markdown("""
+    <div class="main-header">
+        <h1>📥 Streamlit Download Manager</h1>
+        <p>Advanced video downloading with shell integration and real-time progress tracking</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Initialize session state
     if 'file_status' not in st.session_state:
@@ -1038,21 +1176,57 @@ def main():
         
         # Terminal Output Display
         st.markdown("### 📺 Terminal Output")
+        
+        # Terminal controls
+        col_refresh, col_clear, col_auto = st.columns([1, 1, 2])
+        
+        with col_refresh:
+            if st.button("🔄 Refresh Terminal", help="Refresh terminal output"):
+                st.rerun()
+        
+        with col_clear:
+            if st.button("🗑️ Clear Terminal", help="Clear terminal output"):
+                st.session_state.terminal_output.clear()
+                st.rerun()
+        
+        with col_auto:
+            auto_refresh = st.checkbox("🔄 Auto-refresh (2s)", value=True, help="Automatically refresh terminal every 2 seconds")
+        
+        # Get terminal output
         terminal_output = st.session_state.terminal_output.get_output()
+        
         if terminal_output:
-            terminal_text = "\n".join(terminal_output)
-            st.code(terminal_text, language="bash")
+            # Create a styled terminal display
+            terminal_html = f"""
+            <div style="
+                background-color: #1e1e1e;
+                color: #ffffff;
+                padding: 15px;
+                border-radius: 8px;
+                font-family: 'Courier New', monospace;
+                font-size: 14px;
+                line-height: 1.4;
+                max-height: 400px;
+                overflow-y: auto;
+                border: 1px solid #333;
+                white-space: pre-wrap;
+            ">
+            {''.join(terminal_output)}
+            </div>
+            """
+            st.markdown(terminal_html, unsafe_allow_html=True)
         else:
             st.info("No terminal output yet. Run commands to see output here.")
         
-        # Auto-refresh button for terminal output
-        col_refresh, col_clear = st.columns(2)
-        with col_refresh:
-            if st.button("🔄 Refresh Terminal"):
-                st.rerun()
-        with col_clear:
-            if st.button("🗑️ Clear Terminal"):
-                st.session_state.terminal_output = TerminalOutput()
+        # Auto-refresh if enabled
+        if auto_refresh and terminal_output:
+            import time
+            if 'last_terminal_refresh' not in st.session_state:
+                st.session_state['last_terminal_refresh'] = time.time()
+            
+            current_time = time.time()
+            if current_time - st.session_state['last_terminal_refresh'] > 2:
+                st.session_state['last_terminal_refresh'] = current_time
                 st.rerun()
     
     # Download location
@@ -1180,46 +1354,74 @@ def main():
         
         # Show download progress if downloading
         if st.session_state.get('is_downloading', False):
-            st.markdown("### 📊 Download Progress")
+            st.markdown("""
+            <div class="progress-container">
+                <h3 style="margin-top: 0; color: #333;">📊 Download Progress</h3>
+            """, unsafe_allow_html=True)
             
             # Count completed files (including already downloaded)
             completed = sum(1 for name in selected if st.session_state['file_status'].get(name, {}).get('status') in ['completed', 'already downloaded'])
+            failed = sum(1 for name in selected if str(st.session_state['file_status'].get(name, {}).get('status', '')).startswith('error'))
             total = len(selected)
-            progress = completed / total if total > 0 else 0
+            processed = completed + failed
+            progress = processed / total if total > 0 else 0
             
-            # Overall progress bar
-            progress_bar = st.progress(progress)
+            # Overall progress bar with detailed text
+            progress_text = f"Progress: {processed}/{total} processed ({completed} successful, {failed} failed)"
+            progress_bar = st.progress(progress, text=progress_text)
             
-            # Individual file status (no progress bars, just percentage)
+            # Individual file status with enhanced display
             status_lines = []
             for name in selected:
                 status_info = st.session_state['file_status'].get(name, {})
                 status = status_info.get('status', 'pending')
                 progress_val = status_info.get('progress', 0)
+                speed = status_info.get('speed', 0)
+                eta = status_info.get('eta', 0)
+                downloaded = status_info.get('downloaded', 0)
+                elapsed = status_info.get('elapsed', 0)
                 
                 if status == 'completed':
-                    status_lines.append(f"✅ {name} (100%)")
+                    status_lines.append(f"✅ `{name}`: Completed")
                 elif status == 'downloading':
-                    status_lines.append(f"⏳ {name} ({progress_val}%)")
-                elif status == 'already downloaded':
-                    status_lines.append(f"📁 {name} (already exists)")
+                    # Format speed and ETA
+                    speed_str = f"{speed/1024/1024:.1f} MB/s" if speed > 1024*1024 else f"{speed/1024:.1f} KB/s" if speed > 1024 else f"{speed:.1f} B/s"
+                    eta_str = f"{int(eta)}s" if eta < 60 else f"{int(eta/60)}m {int(eta%60)}s" if eta < 3600 else f"{int(eta/3600)}h {int((eta%3600)/60)}m"
+                    size_str = f"{downloaded/1024/1024:.1f} MB" if downloaded > 1024*1024 else f"{downloaded/1024:.1f} KB" if downloaded > 1024 else f"{downloaded} B"
+                    status_lines.append(f"⏳ `{name}`: Downloading ({progress_val:.1f}%) - {speed_str} - ETA: {eta_str} - {size_str}")
+                elif status == 'paused':
+                    status_lines.append(f"⏸️ `{name}`: Paused")
+                elif status == 'stopped':
+                    status_lines.append(f"⏹️ `{name}`: Stopped")
                 elif status.startswith('error'):
-                    status_lines.append(f"❌ {name}: {status}")
+                    status_lines.append(f"❌ `{name}`: {status}")
+                elif status == 'already downloaded':
+                    status_lines.append(f"✅ `{name}`: Already Downloaded")
                 else:
-                    status_lines.append(f"📄 {name}: {status}")
+                    status_lines.append(f"📄 `{name}`: {status}")
             
-            # Display status without using st.empty() to prevent flashing
+            # Display status with better formatting
             st.markdown("\n".join(status_lines))
             
-            # Show overall progress info
-            if total > 0:
-                st.info(f"📊 Progress: {completed}/{total} files completed ({int(progress * 100)}%)")
+            # Control buttons
+            col_refresh, col_stop, col_pause = st.columns([1, 1, 1])
             
-            # Stop downloads button
-            if st.button("⏹️ Stop Downloads"):
-                st.session_state['is_downloading'] = False
-                st.warning("Downloads stopped by user")
-                st.rerun()
+            with col_refresh:
+                if st.button("🔄 Refresh Progress", help="Refresh the progress display"):
+                    st.rerun()
+            
+            with col_stop:
+                if st.button("⏹️ Stop Downloads", help="Stop all downloads"):
+                    st.session_state['is_downloading'] = False
+                    st.warning("Downloads stopped by user")
+                    st.rerun()
+            
+            with col_pause:
+                if st.button("⏸️ Pause/Resume", help="Pause or resume downloads"):
+                    st.session_state['download_paused'] = not st.session_state.get('download_paused', False)
+                    status = "paused" if st.session_state['download_paused'] else "resumed"
+                    st.info(f"Downloads {status}")
+                    st.rerun()
             
             # Check if all downloads are complete
             if completed == total and total > 0:
@@ -1227,30 +1429,19 @@ def main():
                 st.success("🎉 All downloads completed!")
                 st.balloons()
             
-            # Manual refresh button for progress updates
-            col_refresh, col_stop = st.columns([1, 1])
-            
-            with col_refresh:
-                if st.button("🔄 Refresh Progress"):
-                    st.rerun()
-            
-            with col_stop:
-                if st.button("⏹️ Stop Downloads"):
-                    st.session_state['is_downloading'] = False
-                    st.warning("Downloads stopped by user")
-                    st.rerun()
-            
-            # Auto-refresh every 5 seconds if still downloading (non-blocking)
-            if completed < total:
-                # Use a simple auto-refresh that doesn't block
+            # Auto-refresh every 2 seconds if still downloading (non-blocking)
+            if processed < total:
                 import time
                 if 'last_refresh' not in st.session_state:
                     st.session_state['last_refresh'] = time.time()
                 
                 current_time = time.time()
-                if current_time - st.session_state['last_refresh'] > 5:
+                if current_time - st.session_state['last_refresh'] > 2:
                     st.session_state['last_refresh'] = current_time
                     st.rerun()
+            
+            # Close progress container
+            st.markdown("</div>", unsafe_allow_html=True)
         
         # Stream button
         with col_stream:
