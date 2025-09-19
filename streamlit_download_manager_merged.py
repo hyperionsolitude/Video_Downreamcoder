@@ -15,21 +15,14 @@ import tempfile
 import json
 import threading
 import urllib.parse
-from pathlib import Path
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup, Tag
 import yt_dlp
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3
-from mutagen.id3._frames import APIC, TIT2, TPE1, TALB
-from PIL import Image
-import io
 import queue
 from datetime import datetime
 import numpy as np
 import librosa
-from scipy import signal
 from scipy.spatial.distance import cosine
 
 # --- CONFIG ---
@@ -1333,7 +1326,6 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
     # Optionally trim intro/outro per file
     processed_files = []
     did_trim = False
-    all_removed_parts = []
     if intro_range or outro_range:
         terminal.add_line("Trimming intro/outro segments before merge...", "info")
         
@@ -1369,25 +1361,18 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
                     if det and det[2] > 0.6:
                         ep_outro = (det[0], det[1])
                         terminal.add_line(f"Aligned outro for {os.path.basename(vf)}: {ep_outro[0]:.1f}-{ep_outro[1]:.1f}", "info")
-                ok, outp, removed_parts = trim_video_remove_segments(vf, intro_range=ep_intro, outro_range=ep_outro, work_dir=download_dir, return_removed=True)
+                ok, outp = trim_video_remove_segments(vf, intro_range=ep_intro, outro_range=ep_outro, work_dir=download_dir, return_removed=False)
                 if not ok:
                     return False, f"Trimming failed for {os.path.basename(vf)}: {outp}"
                 processed_files.append(outp)
                 did_trim = True
-                # Save removed parts list for a report
-                if removed_parts:
-                    terminal.add_line(f"Saved {len(removed_parts)} removed segments for {os.path.basename(vf)}", "info")
-                    all_removed_parts.extend(removed_parts)
         else:
             for vf in video_files:
-                ok, outp, removed_parts = trim_video_remove_segments(vf, intro_range=intro_range, outro_range=outro_range, work_dir=download_dir, return_removed=True)
+                ok, outp = trim_video_remove_segments(vf, intro_range=intro_range, outro_range=outro_range, work_dir=download_dir, return_removed=False)
                 if not ok:
                     return False, f"Trimming failed for {os.path.basename(vf)}: {outp}"
                 processed_files.append(outp)
                 did_trim = True
-                if removed_parts:
-                    terminal.add_line(f"Saved {len(removed_parts)} removed segments for {os.path.basename(vf)}", "info")
-                    all_removed_parts.extend(removed_parts)
     else:
         processed_files = video_files
     
@@ -1511,28 +1496,6 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
     
     # If requested, compile deleted parts into a single deleted.mp4 in the download_dir
     deleted_path = None
-    if result['success'] and keep_deleted_compilation and all_removed_parts:
-        deleted_list = os.path.join(download_dir, "deleted_parts.txt")
-        try:
-            with open(deleted_list, 'w') as lf:
-                for p in all_removed_parts:
-                    esc = p.replace("'", "'\"'\"'")
-                    lf.write(f"file '{esc}'\n")
-            deleted_path = os.path.join(download_dir, "deleted.mp4")
-            del_cmd = f"ffmpeg -y -f concat -safe 0 -i '{deleted_list}' -c copy '{deleted_path}'"
-            terminal.add_line("Creating deleted.mp4 compilation from removed segments", "info")
-            del_res = run_shell_command_with_output(del_cmd, cwd=download_dir, timeout=1800)
-            if not del_res['success'] or not os.path.exists(deleted_path) or os.path.getsize(deleted_path) == 0:
-                del_cmd2 = f"ffmpeg -y -f concat -safe 0 -i '{deleted_list}' -c:v libx264 -preset veryfast -crf 20 -c:a copy '{deleted_path}'"
-                run_shell_command_with_output(del_cmd2, cwd=download_dir, timeout=1800)
-        except Exception as e:
-            terminal.add_line(f"Failed to build deleted.mp4: {e}", "warning")
-        finally:
-            try:
-                if os.path.exists(deleted_list):
-                    os.remove(deleted_list)
-            except Exception:
-                pass
 
     # Remove residual temporary artifacts after successful encode
     if result['success'] and cleanup_residuals:
@@ -2250,8 +2213,7 @@ def main():
                 align_per_file = st.checkbox("Per-episode auto alignment (intro/outro may shift per file)", value=True)
 
             # Cleanup option
-            cleanup_residuals = st.checkbox("Keep only final outputs (trimmed.mp4 and deleted.mp4)", value=True, help="Deletes temporary folders after building outputs")
-            keep_removed_video = st.checkbox("Also create deleted.mp4 (concatenate removed OP/ED segments)", value=True)
+            cleanup_residuals = st.checkbox("Keep only final trimmed output (delete residuals)", value=True, help="Deletes temporary folders and removed parts")
 
             if st.button("Start Encoding"):
                 output_path = os.path.join(download_dir, output_name)
@@ -2315,7 +2277,7 @@ def main():
                         outro_rng,
                         per_file_align=align_per_file,
                         cleanup_residuals=cleanup_residuals,
-                        keep_deleted_compilation=keep_removed_video,
+                        keep_deleted_compilation=False,
                         only_keep_outputs=cleanup_residuals
                     )
                 
