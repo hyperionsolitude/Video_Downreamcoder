@@ -1359,49 +1359,9 @@ def main():
                 <h3 style="margin-top: 0; color: #333;">📊 Download Progress</h3>
             """, unsafe_allow_html=True)
             
-            # Count completed files (including already downloaded)
-            completed = sum(1 for name in selected if st.session_state['file_status'].get(name, {}).get('status') in ['completed', 'already downloaded'])
-            failed = sum(1 for name in selected if str(st.session_state['file_status'].get(name, {}).get('status', '')).startswith('error'))
-            total = len(selected)
-            processed = completed + failed
-            progress = processed / total if total > 0 else 0
-            
-            # Overall progress bar with detailed text
-            progress_text = f"Progress: {processed}/{total} processed ({completed} successful, {failed} failed)"
-            progress_bar = st.progress(progress, text=progress_text)
-            
-            # Individual file status with enhanced display
-            status_lines = []
-            for name in selected:
-                status_info = st.session_state['file_status'].get(name, {})
-                status = status_info.get('status', 'pending')
-                progress_val = status_info.get('progress', 0)
-                speed = status_info.get('speed', 0)
-                eta = status_info.get('eta', 0)
-                downloaded = status_info.get('downloaded', 0)
-                elapsed = status_info.get('elapsed', 0)
-                
-                if status == 'completed':
-                    status_lines.append(f"✅ `{name}`: Completed")
-                elif status == 'downloading':
-                    # Format speed and ETA
-                    speed_str = f"{speed/1024/1024:.1f} MB/s" if speed > 1024*1024 else f"{speed/1024:.1f} KB/s" if speed > 1024 else f"{speed:.1f} B/s"
-                    eta_str = f"{int(eta)}s" if eta < 60 else f"{int(eta/60)}m {int(eta%60)}s" if eta < 3600 else f"{int(eta/3600)}h {int((eta%3600)/60)}m"
-                    size_str = f"{downloaded/1024/1024:.1f} MB" if downloaded > 1024*1024 else f"{downloaded/1024:.1f} KB" if downloaded > 1024 else f"{downloaded} B"
-                    status_lines.append(f"⏳ `{name}`: Downloading ({progress_val:.1f}%) - {speed_str} - ETA: {eta_str} - {size_str}")
-                elif status == 'paused':
-                    status_lines.append(f"⏸️ `{name}`: Paused")
-                elif status == 'stopped':
-                    status_lines.append(f"⏹️ `{name}`: Stopped")
-                elif status.startswith('error'):
-                    status_lines.append(f"❌ `{name}`: {status}")
-                elif status == 'already downloaded':
-                    status_lines.append(f"✅ `{name}`: Already Downloaded")
-                else:
-                    status_lines.append(f"📄 `{name}`: {status}")
-            
-            # Display status with better formatting
-            st.markdown("\n".join(status_lines))
+            # Create placeholders for real-time updates
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
             
             # Control buttons
             col_refresh, col_stop, col_pause = st.columns([1, 1, 1])
@@ -1423,22 +1383,99 @@ def main():
                     st.info(f"Downloads {status}")
                     st.rerun()
             
-            # Check if all downloads are complete
-            if completed == total and total > 0:
-                st.session_state['is_downloading'] = False
-                st.success("🎉 All downloads completed!")
-                st.balloons()
+            # Real-time progress update loop (like original script)
+            import time
+            max_wait = 600  # 10 minutes max for polling
+            poll_interval = 0.5  # seconds
+            start_time = time.time()
             
-            # Auto-refresh every 2 seconds if still downloading (non-blocking)
-            if processed < total:
-                import time
-                if 'last_refresh' not in st.session_state:
-                    st.session_state['last_refresh'] = time.time()
+            while st.session_state.get('is_downloading', False) and (time.time() - start_time < max_wait):
+                file_status = st.session_state.get('file_status', {})
+                completed_files = sum(1 for name in selected if file_status.get(name, {}).get('status') in ['completed', 'already downloaded'])
+                failed_files = sum(1 for name in selected if str(file_status.get(name, {}).get('status', '')).startswith('error'))
+                total_selected = len(selected)
+                processed_files = completed_files + failed_files
+                progress = processed_files / total_selected if total_selected > 0 else 0
                 
-                current_time = time.time()
-                if current_time - st.session_state['last_refresh'] > 2:
-                    st.session_state['last_refresh'] = current_time
-                    st.rerun()
+                # Update progress bar
+                progress_text = f"Progress: {processed_files}/{total_selected} processed ({completed_files} successful, {failed_files} failed)"
+                progress_placeholder.progress(progress, text=progress_text)
+                
+                # Update status lines
+                status_lines = []
+                for name in selected:
+                    status_info = file_status.get(name, {})
+                    status = status_info.get('status', '-')
+                    progress_val = status_info.get('progress', 0)
+                    speed = status_info.get('speed', 0)
+                    eta = status_info.get('eta', 0)
+                    downloaded = status_info.get('downloaded', 0)
+                    
+                    if status == 'completed':
+                        status_lines.append(f"✅ `{name}`: Completed")
+                    elif status == 'downloading':
+                        # Format speed and ETA
+                        speed_str = f"{speed/1024/1024:.1f} MB/s" if speed > 1024*1024 else f"{speed/1024:.1f} KB/s" if speed > 1024 else f"{speed:.1f} B/s"
+                        eta_str = f"{int(eta)}s" if eta < 60 else f"{int(eta/60)}m {int(eta%60)}s" if eta < 3600 else f"{int(eta/3600)}h {int((eta%3600)/60)}m"
+                        size_str = f"{downloaded/1024/1024:.1f} MB" if downloaded > 1024*1024 else f"{downloaded/1024:.1f} KB" if downloaded > 1024 else f"{downloaded} B"
+                        status_lines.append(f"⏳ `{name}`: Downloading ({progress_val:.1f}%) - {speed_str} - ETA: {eta_str} - {size_str}")
+                    elif status == 'paused':
+                        status_lines.append(f"⏸️ `{name}`: Paused")
+                    elif status == 'stopped':
+                        status_lines.append(f"⏹️ `{name}`: Stopped")
+                    elif str(status).startswith('error'):
+                        status_lines.append(f"❌ `{name}`: {status}")
+                    elif status == 'already downloaded':
+                        status_lines.append(f"✅ `{name}`: Already Downloaded")
+                    else:
+                        status_lines.append(f"📄 `{name}`: {status}")
+                
+                # Update status display
+                status_placeholder.markdown("\n".join(status_lines))
+                
+                # Check if all downloads are complete
+                if completed_files == total_selected and total_selected > 0:
+                    st.session_state['is_downloading'] = False
+                    st.success("🎉 All downloads completed!")
+                    st.balloons()
+                    break
+                
+                time.sleep(poll_interval)
+            
+            # Final update after downloads
+            file_status = st.session_state.get('file_status', {})
+            completed_files = sum(1 for name in selected if file_status.get(name, {}).get('status') in ['completed', 'already downloaded'])
+            failed_files = sum(1 for name in selected if str(file_status.get(name, {}).get('status', '')).startswith('error'))
+            total_selected = len(selected)
+            processed_files = completed_files + failed_files
+            progress = processed_files / total_selected if total_selected > 0 else 0
+            
+            # Final progress update
+            progress_text = f"Progress: {processed_files}/{total_selected} processed ({completed_files} successful, {failed_files} failed)"
+            progress_placeholder.progress(progress, text=progress_text)
+            
+            # Final status update
+            status_lines = []
+            for name in selected:
+                status_info = file_status.get(name, {})
+                status = status_info.get('status', '-')
+                if status == 'completed':
+                    status_lines.append(f"✅ `{name}`: Completed")
+                elif status == 'downloading':
+                    prog = status_info.get('progress', 0)
+                    status_lines.append(f"⏳ `{name}`: Downloading ({prog:.1f}%)")
+                elif status == 'paused':
+                    status_lines.append(f"⏸️ `{name}`: Paused")
+                elif status == 'stopped':
+                    status_lines.append(f"⏹️ `{name}`: Stopped")
+                elif str(status).startswith('error'):
+                    status_lines.append(f"❌ `{name}`: {status}")
+                elif status == 'already downloaded':
+                    status_lines.append(f"✅ `{name}`: Already Downloaded")
+                else:
+                    status_lines.append(f"📄 `{name}`: {status}")
+            
+            status_placeholder.markdown("\n".join(status_lines))
             
             # Close progress container
             st.markdown("</div>", unsafe_allow_html=True)
