@@ -103,6 +103,10 @@ if 'terminal_output' not in st.session_state:
 # --- SHELL COMMAND FUNCTIONS ---
 def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=True):
     """Run shell command with real-time output capture"""
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     
     if show_in_terminal:
@@ -204,6 +208,10 @@ def check_command_exists(command):
 
 def run_sudo_command_with_password(cmd, password, timeout=300):
     """Run sudo command with password provided via stdin"""
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     terminal.add_line(f"$ echo '[password]' | sudo -S {cmd}", "command")
     
@@ -262,6 +270,10 @@ def run_sudo_command_with_password(cmd, password, timeout=300):
 
 def install_prerequisites():
     """Install required packages using shell commands"""
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     terminal.add_line("Starting prerequisites installation...", "info")
     
@@ -375,10 +387,12 @@ def detect_hardware_acceleration():
         acceleration['qsv'] = 'h264_qsv' in encoders or 'hevc_qsv' in encoders
         acceleration['vaapi'] = 'h264_vaapi' in encoders or 'hevc_vaapi' in encoders
     
-    # Check NVIDIA GPU
-    result = run_shell_command("nvidia-smi")
-    if result['success']:
-        acceleration['nvenc'] = True
+    # Test NVIDIA GPU availability (not just nvidia-smi)
+    if acceleration['nvenc']:
+        # Test if NVENC actually works
+        test_result = run_shell_command("ffmpeg -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -c:v h264_nvenc -f null - 2>&1")
+        if not test_result['success'] or 'No capable devices found' in test_result['stderr']:
+            acceleration['nvenc'] = False
     
     return acceleration
 
@@ -498,27 +512,28 @@ async def fetch_video_links(url, audio_only=False, playlist_limit=None):
             
             return files, None
 
-def download_file_with_shell(file_url, file_path, file_info=None):
-    """Download file using shell commands (wget, curl, or yt-dlp)"""
+def download_file_with_shell(file_url, file_path, file_info=None, progress_callback=None):
+    """Download file using shell commands (wget, curl, or yt-dlp) with progress tracking"""
     file_dir = os.path.dirname(file_path)
     os.makedirs(file_dir, exist_ok=True)
     
-    # For YouTube videos, use yt-dlp
+    # For YouTube videos, use yt-dlp with progress
     if file_info and file_info.get('is_youtube'):
         if file_info.get('is_audio'):
-            cmd = f"yt-dlp -x --audio-format mp3 -o '{file_path}' '{file_info['yt_webpage_url']}'"
+            cmd = f"yt-dlp --progress -x --audio-format mp3 -o '{file_path}' '{file_info['yt_webpage_url']}'"
         else:
-            cmd = f"yt-dlp -f 'best[ext=mp4]/best' -o '{file_path}' '{file_info['yt_webpage_url']}'"
+            cmd = f"yt-dlp --progress -f 'best[ext=mp4]/best' -o '{file_path}' '{file_info['yt_webpage_url']}'"
     else:
         # For direct downloads, try wget first, then curl
         if check_command_exists('wget'):
-            cmd = f"wget -O '{file_path}' '{file_url}'"
+            cmd = f"wget --progress=bar:force -O '{file_path}' '{file_url}'"
         elif check_command_exists('curl'):
-            cmd = f"curl -L -o '{file_path}' '{file_url}'"
+            cmd = f"curl -L --progress-bar -o '{file_path}' '{file_url}'"
         else:
             return False, "Neither wget nor curl available"
     
-    result = run_shell_command(cmd, timeout=600)
+    # Use the output version to capture progress
+    result = run_shell_command_with_output(cmd, timeout=600, show_in_terminal=True)
     return result['success'], result['stderr']
 
 def download_all_files(files, selected, download_dir, status_dict):
@@ -554,7 +569,36 @@ def download_all_files(files, selected, download_dir, status_dict):
         
         status_dict[file_key] = {'status': 'downloading', 'progress': 0}
         
-        success, error = download_file_with_shell(file['url'], file_path, file)
+        # Ensure terminal_output exists in session state
+        if 'terminal_output' not in st.session_state:
+            st.session_state.terminal_output = TerminalOutput()
+        
+        # Start download with progress tracking
+        import threading
+        import time
+        
+        def update_progress():
+            """Update progress during download"""
+            start_time = time.time()
+            last_progress = 0
+            while status_dict[file_key]['status'] == 'downloading':
+                if os.path.exists(file_path):
+                    current_size = os.path.getsize(file_path)
+                    # Estimate progress based on time elapsed (rough approximation)
+                    elapsed = time.time() - start_time
+                    # Assume average download takes 30 seconds, cap at 90%
+                    progress = min(90, int((elapsed / 30) * 100))
+                    # Only update if progress changed significantly (reduce flashing)
+                    if progress - last_progress >= 5 or progress == 90:
+                        status_dict[file_key]['progress'] = progress
+                        last_progress = progress
+                time.sleep(2)  # Check less frequently
+        
+        # Start progress tracking thread
+        progress_thread = threading.Thread(target=update_progress, daemon=True)
+        progress_thread.start()
+        
+        success, error = download_file_with_shell(file['url'], file_path, file, progress_callback=None)
         
         if success:
             status_dict[file_key] = {'status': 'completed', 'progress': 100}
@@ -595,6 +639,11 @@ async def prepare_streaming_urls(files, selected, download_dir):
     """Prepare URLs for streaming, prioritizing local files over network streams"""
     urls = []
     names = []
+    
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     
     for file in files:
@@ -640,6 +689,10 @@ async def get_youtube_direct_url(webpage_url, audio_only=False):
 
 def stream_all_in_vlc(urls, names):
     """Stream files in VLC media player"""
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     terminal.add_line(f"Starting VLC streaming for {len(urls)} files", "info")
     
@@ -767,6 +820,10 @@ def get_video_info(file_path):
 
 def encode_videos_direct(download_dir, output_file, preset="auto", quality="25"):
     """Encode videos directly using FFmpeg commands"""
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    
     terminal = st.session_state.terminal_output
     
     # Find video files
@@ -830,6 +887,20 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25")
     
     # Run FFmpeg
     result = run_shell_command_with_output(cmd, cwd=download_dir, timeout=3600)
+    
+    # If hardware acceleration failed, try CPU fallback
+    if not result['success'] and ('No capable devices found' in result['stderr'] or 'OpenEncodeSessionEx failed' in result['stderr']):
+        terminal.add_line("Hardware acceleration failed, trying CPU fallback...", "warning")
+        
+        # Fallback to CPU encoding
+        if preset == "auto" or "nvenc" in preset or "qsv" in preset or "vaapi" in preset:
+            if "h264" in preset or preset == "auto":
+                fallback_cmd = f"ffmpeg -y -f concat -safe 0 -i '{list_file}' -c:v libx264 -preset fast -crf {quality} -c:a copy '{output_path}'"
+            else:
+                fallback_cmd = f"ffmpeg -y -f concat -safe 0 -i '{list_file}' -c:v libx265 -preset fast -crf {quality} -c:a copy '{output_path}'"
+            
+            terminal.add_line(f"Fallback command: {fallback_cmd}", "info")
+            result = run_shell_command_with_output(fallback_cmd, cwd=download_dir, timeout=3600)
     
     # Clean up
     try:
@@ -1084,27 +1155,104 @@ def main():
         # Ensure download directory exists
         download_dir = ensure_download_dir(current_folder)
         
-        if st.button("Download Selected"):
-            if not selected:
-                st.warning("No files selected for download!")
-            elif max_concurrency == 0:
-                st.error("Downloads are disabled! Set max parallel downloads to a positive number or -1 for unlimited.")
-            else:
-                st.session_state['is_downloading'] = True
-                files_to_download = [f for f in files if f['name'] in selected]
-                
-                # Show actual concurrency being used
-                if max_concurrency == -1:
-                    actual_workers = min(len(selected), 20)
-                    st.info(f"📊 Using {actual_workers} parallel downloads (capped at 20 for stability)")
+        # Download button
+        col_download, col_stream = st.columns([1, 1])
+        
+        with col_download:
+            if st.button("📥 Download Selected", type="primary"):
+                if not selected:
+                    st.warning("No files selected for download!")
+                elif max_concurrency == 0:
+                    st.error("Downloads are disabled! Set max parallel downloads to a positive number or -1 for unlimited.")
                 else:
-                    st.info(f"📊 Using {max_concurrency} parallel downloads")
+                    st.session_state['is_downloading'] = True
+                    files_to_download = [f for f in files if f['name'] in selected]
+                    
+                    # Show actual concurrency being used
+                    if max_concurrency == -1:
+                        actual_workers = min(len(selected), 20)
+                        st.info(f"📊 Using {actual_workers} parallel downloads (capped at 20 for stability)")
+                    else:
+                        st.info(f"📊 Using {max_concurrency} parallel downloads")
+                    
+                    # Start download thread
+                    download_thread = download_all_files(files_to_download, [f['name'] for f in files_to_download], download_dir, st.session_state['file_status'])
+        
+        # Show download progress if downloading
+        if st.session_state.get('is_downloading', False):
+            st.markdown("### 📊 Download Progress")
+            
+            # Count completed files (including already downloaded)
+            completed = sum(1 for name in selected if st.session_state['file_status'].get(name, {}).get('status') in ['completed', 'already downloaded'])
+            total = len(selected)
+            progress = completed / total if total > 0 else 0
+            
+            # Overall progress bar
+            progress_bar = st.progress(progress)
+            
+            # Individual file status (no progress bars, just percentage)
+            status_lines = []
+            for name in selected:
+                status_info = st.session_state['file_status'].get(name, {})
+                status = status_info.get('status', 'pending')
+                progress_val = status_info.get('progress', 0)
                 
-                # Start download thread
-                download_thread = download_all_files(files_to_download, [f['name'] for f in files_to_download], download_dir, st.session_state['file_status'])
+                if status == 'completed':
+                    status_lines.append(f"✅ {name} (100%)")
+                elif status == 'downloading':
+                    status_lines.append(f"⏳ {name} ({progress_val}%)")
+                elif status == 'already downloaded':
+                    status_lines.append(f"📁 {name} (already exists)")
+                elif status.startswith('error'):
+                    status_lines.append(f"❌ {name}: {status}")
+                else:
+                    status_lines.append(f"📄 {name}: {status}")
+            
+            # Display status without using st.empty() to prevent flashing
+            st.markdown("\n".join(status_lines))
+            
+            # Show overall progress info
+            if total > 0:
+                st.info(f"📊 Progress: {completed}/{total} files completed ({int(progress * 100)}%)")
+            
+            # Stop downloads button
+            if st.button("⏹️ Stop Downloads"):
+                st.session_state['is_downloading'] = False
+                st.warning("Downloads stopped by user")
+                st.rerun()
+            
+            # Check if all downloads are complete
+            if completed == total and total > 0:
+                st.session_state['is_downloading'] = False
+                st.success("🎉 All downloads completed!")
+                st.balloons()
+            
+            # Manual refresh button for progress updates
+            col_refresh, col_stop = st.columns([1, 1])
+            
+            with col_refresh:
+                if st.button("🔄 Refresh Progress"):
+                    st.rerun()
+            
+            with col_stop:
+                if st.button("⏹️ Stop Downloads"):
+                    st.session_state['is_downloading'] = False
+                    st.warning("Downloads stopped by user")
+                    st.rerun()
+            
+            # Auto-refresh every 5 seconds if still downloading (non-blocking)
+            if completed < total:
+                # Use a simple auto-refresh that doesn't block
+                import time
+                if 'last_refresh' not in st.session_state:
+                    st.session_state['last_refresh'] = time.time()
+                
+                current_time = time.time()
+                if current_time - st.session_state['last_refresh'] > 5:
+                    st.session_state['last_refresh'] = current_time
+                    st.rerun()
         
         # Stream button
-        col_stream, col_spacer = st.columns([1, 3])
         with col_stream:
             if st.button("🎬 Stream in VLC"):
                 if not selected:
@@ -1132,37 +1280,6 @@ def main():
                                 st.error("No valid URLs found for streaming!")
                         except Exception as e:
                             st.error(f"Failed to prepare streaming: {e}")
-                
-                # Show progress
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                while st.session_state['is_downloading']:
-                    completed = sum(1 for name in selected if st.session_state['file_status'].get(name, {}).get('status') == 'completed')
-                    total = len(selected)
-                    progress = completed / total if total > 0 else 0
-                    progress_bar.progress(progress)
-                    
-                    status_lines = []
-                    for name in selected:
-                        status = st.session_state['file_status'].get(name, {}).get('status', 'pending')
-                        if status == 'completed':
-                            status_lines.append(f"✅ {name}")
-                        elif status == 'downloading':
-                            status_lines.append(f"⏳ {name}")
-                        elif status.startswith('error'):
-                            status_lines.append(f"❌ {name}: {status}")
-                        else:
-                            status_lines.append(f"📄 {name}: {status}")
-                    
-                    status_text.markdown("\n".join(status_lines))
-                    time.sleep(1)
-                    
-                    # Check if all downloads are complete
-                    if completed == total and total > 0:
-                        st.session_state['is_downloading'] = False
-                        st.success("🎉 All downloads completed!")
-                        break
                 
         
         # Video encoding section
