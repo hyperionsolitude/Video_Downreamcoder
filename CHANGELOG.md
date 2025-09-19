@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2025-09-19
+
+### ✨ New Features
+- **Anime OP/ED Auto-Trim**: Detects intro/outro via audio similarity (MFCC) across episodes
+- **Per-Episode Alignment**: Finds the best OP/ED offsets per file when timing shifts
+- **Deleted Parts Review**: Exports removed segments and builds a `deleted.mp4` concat for verification
+- **Preview Detected Ranges**: UI shows per-file OP/ED ranges with confidence before encoding
+
+### 🔧 Improvements
+- **Copy Preset**: Truly copies when possible (single-file copy and concat with `-c copy`), fallback to minimal re-encode only if needed
+- **One-Click Cleanup**: Option to keep only the final merged output and `deleted.mp4`, removing all residuals
+- **Auto-Detect Fallback**: If AI trim is enabled without manual/detected ranges, detection runs automatically at encode time
+
+### 🐛 Fixes
+- Ensured trimming applies even with "copy" preset by handling concat compatibility
+- Stabilized temp directory cleanup and file list handling
+
 ## [2.0.0] - 2025-09-18
 
 ### 🎉 Major Release - Merged Application

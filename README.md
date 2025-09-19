@@ -19,6 +19,10 @@ A web-based video download and processing application that combines YouTube down
 - Quality control with CRF settings (18-32)
 - Video file merging and concatenation
 - Real-time encoding progress monitoring
+ - Anime OP/ED auto-trim with audio-similarity analysis (MFCC-based)
+ - Per-episode alignment for shifting OP/ED positions
+ - Optional deleted.mp4 created from removed OP/ED segments for review
+ - "Copy" preset now truly copies when possible (single file copy or concat with -c copy)
 
 ### Interface
 - Streamlit-based web interface
@@ -75,6 +79,25 @@ streamlit run streamlit_download_manager_merged.py
 - Support for H.264 and H.265 codecs
 - Quality control via CRF settings
 
+#### Anime OP/ED Trimming
+
+1) Expand "Anime OP/ED Trimming (optional)" in the Encoding section.
+2) Choose Detection Method:
+   - Manual Input: enter intro/outro seconds
+   - Auto-Detect (AI Analysis): detect repeated OP/ED across episodes
+   - Both: auto-detect with manual override
+3) (Optional) Enable "Per-episode auto alignment" so OP/ED are matched per file even if shifted.
+4) Click "Auto-Detect OP/ED" to preview detected ranges per file (with confidence).
+5) Start Encoding.
+
+Outputs and cleanup:
+- Keep only final outputs (trimmed.mp4 and deleted.mp4): when enabled, cleans all residual folders and source videos, leaving only your merged output and a compiled deleted.mp4 of removed parts.
+- Also create deleted.mp4: builds a concat of all removed OP/ED segments for quick review.
+
+Notes on "copy" preset:
+- If a single input file (original or trimmed) is selected, the output is a direct filesystem copy.
+- For multiple files, the app first attempts ffmpeg concat with `-c copy`. If the bitstreams are incompatible, it automatically falls back to a minimal re-encode for compatibility.
+
 ## Configuration
 
 ### Parallel Downloads
@@ -100,6 +123,7 @@ streamlit run streamlit_download_manager_merged.py
 - FFmpeg
 - wget or curl
 - Linux/macOS/Windows with WSL
+ - For AI OP/ED detection: numpy, scipy, librosa (installed via requirements.txt)
 
 ### Optional (Hardware Acceleration)
 - NVIDIA GPU with drivers
