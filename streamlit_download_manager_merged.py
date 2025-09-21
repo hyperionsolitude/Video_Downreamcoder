@@ -2,28 +2,160 @@
 """
 Streamlit Download Manager with Shell Command Integration
 Combines download management with video encoding using shell commands
+
+Features:
+- Cross-platform video downloading and processing
+- Hardware-accelerated encoding (NVIDIA, Intel, AMD, Apple Silicon)
+- AI-powered intro/outro detection and trimming
+- Real-time progress monitoring
+- macOS security integration
 """
 
-import streamlit as st
-import subprocess
+from __future__ import annotations
+
+import asyncio
+import json
 import os
-import sys
-import time
+import platform
+import queue
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
-import json
 import threading
+import time
 import urllib.parse
-import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import streamlit as st
+import yt_dlp
 import aiohttp
 from bs4 import BeautifulSoup, Tag
-import yt_dlp
-import queue
-from datetime import datetime
-import numpy as np
-import librosa
-from scipy.spatial.distance import cosine
+
+# Check for required dependencies and provide helpful error messages
+missing_deps = []
+try:
+    import librosa
+except ImportError:
+    missing_deps.append("librosa")
+    
+try:
+    from scipy.spatial.distance import cosine
+except ImportError:
+    missing_deps.append("scipy")
+    
+try:
+    import distro  # For Linux distribution detection
+except ImportError:
+    missing_deps.append("distro")
+
+# If dependencies are missing, show installation instructions
+if missing_deps:
+    st.error("🚨 **Missing Required Dependencies**")
+    st.write(f"The following Python packages are required but not installed: {', '.join(missing_deps)}")
+    
+    st.write("**To install dependencies, run one of these commands:**")
+    
+    # Detect platform for appropriate installation command
+    system = platform.system().lower()
+    if system == "darwin":  # macOS
+        st.code("pip3 install -r requirements.txt", language="bash")
+        st.write("**Or use Homebrew (recommended for macOS):**")
+        st.code("brew install python3 && pip3 install -r requirements.txt", language="bash")
+    elif system == "linux":
+        st.code("pip3 install -r requirements.txt", language="bash")
+        st.write("**Or install system packages first:**")
+        st.code("sudo apt install python3-pip && pip3 install -r requirements.txt", language="bash")
+    else:
+        st.code("pip install -r requirements.txt", language="bash")
+    
+    st.write("**After installing dependencies, refresh this page.**")
+    st.stop()
+
+# --- PLATFORM DETECTION ---
+def detect_platform() -> Dict[str, Any]:
+    """Detect the current platform and return platform-specific configurations.
+    
+    Returns:
+        Dict containing platform information including OS, architecture,
+        package manager, and platform-specific configurations.
+    """
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    
+    config = {
+        'os': system,
+        'arch': machine,
+        'is_macos': system == 'darwin',
+        'is_linux': system == 'linux',
+        'is_windows': system == 'windows',
+        'is_arm': 'arm' in machine or 'aarch64' in machine,
+        'is_apple_silicon': system == 'darwin' and ('arm' in machine or 'aarch64' in machine),
+        'package_manager': None,
+        'ffmpeg_install_cmd': None,
+        'system_packages': [],
+        'hardware_acceleration': []
+    }
+    
+    if config['is_macos']:
+        config['package_manager'] = 'homebrew'
+        config['ffmpeg_install_cmd'] = 'brew install ffmpeg'
+        config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+        config['hardware_acceleration'] = ['videotoolbox', 'metal']
+        
+        # Check if Homebrew is installed
+        try:
+            subprocess.run(['brew', '--version'], capture_output=True, check=True)
+            config['homebrew_installed'] = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            config['homebrew_installed'] = False
+            
+    elif config['is_linux']:
+        # Detect Linux distribution
+        try:
+            distro_info = distro.linux_distribution(full_distribution_name=False)
+            distro_name = distro_info[0].lower()
+            
+            if 'ubuntu' in distro_name or 'debian' in distro_name:
+                config['package_manager'] = 'apt'
+                config['ffmpeg_install_cmd'] = 'sudo apt install ffmpeg'
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python3-pip', 'python3-venv', 'python3-dev', 'libffi-dev', 'libssl-dev']
+            elif 'fedora' in distro_name or 'rhel' in distro_name or 'centos' in distro_name:
+                config['package_manager'] = 'dnf'
+                config['ffmpeg_install_cmd'] = 'sudo dnf install ffmpeg'
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python3-pip', 'python3-venv', 'python3-devel', 'libffi-devel', 'openssl-devel']
+            elif 'arch' in distro_name:
+                config['package_manager'] = 'pacman'
+                config['ffmpeg_install_cmd'] = 'sudo pacman -S ffmpeg'
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python-pip', 'python-virtualenv']
+            else:
+                # Generic fallback
+                config['package_manager'] = 'unknown'
+                config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+                
+        except Exception:
+            # Fallback if distro detection fails
+            config['package_manager'] = 'unknown'
+            config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
+            config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+            
+        config['hardware_acceleration'] = ['nvenc', 'qsv', 'vaapi']
+        
+    elif config['is_windows']:
+        config['package_manager'] = 'chocolatey'
+        config['ffmpeg_install_cmd'] = 'choco install ffmpeg'
+        config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+        config['hardware_acceleration'] = ['nvenc', 'qsv']
+    
+    return config
+
+# Initialize platform configuration
+PLATFORM_CONFIG = detect_platform()
 
 # --- CONFIG ---
 BASE_DOWNLOAD_DIR = os.path.expanduser("~/Downloads/StreamlitDownloads")
@@ -291,15 +423,86 @@ def run_sudo_command_with_password(cmd, password, timeout=300):
         }
 
 def install_prerequisites():
-    """Install required packages using shell commands"""
+    """Install required packages using cross-platform package managers"""
     # Ensure terminal_output exists in session state
     if 'terminal_output' not in st.session_state:
         st.session_state.terminal_output = TerminalOutput()
     
     terminal = st.session_state.terminal_output
-    terminal.add_line("Starting prerequisites installation...", "info")
+    terminal.add_line(f"Starting prerequisites installation on {PLATFORM_CONFIG['os']}...", "info")
     
-    st.info("Installing prerequisites...")
+    st.info(f"Installing prerequisites for {PLATFORM_CONFIG['os']}...")
+    
+    # macOS installation
+    if PLATFORM_CONFIG['is_macos']:
+        return install_prerequisites_macos(terminal)
+    
+    # Linux installation
+    elif PLATFORM_CONFIG['is_linux']:
+        return install_prerequisites_linux(terminal)
+    
+    # Windows installation
+    elif PLATFORM_CONFIG['is_windows']:
+        return install_prerequisites_windows(terminal)
+    
+    else:
+        st.error(f"❌ Unsupported operating system: {PLATFORM_CONFIG['os']}")
+        terminal.add_line(f"Unsupported OS: {PLATFORM_CONFIG['os']}", "error")
+        return False
+
+def install_prerequisites_macos(terminal):
+    """Install prerequisites on macOS using Homebrew"""
+    st.info("🍎 Installing prerequisites on macOS...")
+    
+    # Check if Homebrew is installed
+    if not PLATFORM_CONFIG.get('homebrew_installed', False):
+        st.warning("⚠️ Homebrew not found. Installing Homebrew first...")
+        terminal.add_line("Installing Homebrew...", "info")
+        
+        # Install Homebrew
+        install_cmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+        result = run_shell_command_with_output(install_cmd, timeout=300)
+        
+        if not result['success']:
+            st.error("❌ Failed to install Homebrew. Please install it manually from https://brew.sh")
+            terminal.add_line("Failed to install Homebrew", "error")
+            return False
+        
+        st.success("✅ Homebrew installed!")
+        terminal.add_line("Homebrew installed successfully", "info")
+    
+    # Install packages via Homebrew
+    packages = ['ffmpeg', 'wget', 'curl']
+    st.info("🔧 Installing system packages via Homebrew...")
+    
+    for package in packages:
+        st.info(f"Installing {package}...")
+        result = run_shell_command_with_output(f"brew install {package}", timeout=120)
+        
+        if not result['success']:
+            st.warning(f"Failed to install {package}")
+            terminal.add_line(f"Failed to install {package}", "error")
+        else:
+            st.success(f"✅ {package} installed!")
+            terminal.add_line(f"Successfully installed {package}", "info")
+    
+    # Install yt-dlp
+    st.info("🎥 Installing yt-dlp...")
+    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip3")
+        terminal.add_line("Failed to install yt-dlp", "error")
+    else:
+        st.success("✅ yt-dlp installed!")
+        terminal.add_line("yt-dlp installed successfully", "info")
+    
+    terminal.add_line("macOS prerequisites installation completed!", "info")
+    st.success("🎉 Prerequisites installation completed!")
+    return True
+
+def install_prerequisites_linux(terminal):
+    """Install prerequisites on Linux using appropriate package manager"""
+    st.info("🐧 Installing prerequisites on Linux...")
     
     # Check if we can run sudo commands without password first
     sudo_check = run_shell_command("sudo -n true", timeout=5)
@@ -323,6 +526,20 @@ def install_prerequisites():
         st.success("✅ Password verified!")
         terminal.add_line("Sudo password verified successfully", "info")
     
+    # Install packages based on package manager
+    if PLATFORM_CONFIG['package_manager'] == 'apt':
+        return install_prerequisites_apt(terminal, needs_password, password)
+    elif PLATFORM_CONFIG['package_manager'] == 'dnf':
+        return install_prerequisites_dnf(terminal, needs_password, password)
+    elif PLATFORM_CONFIG['package_manager'] == 'pacman':
+        return install_prerequisites_pacman(terminal, needs_password, password)
+    else:
+        st.error(f"❌ Unsupported package manager: {PLATFORM_CONFIG['package_manager']}")
+        terminal.add_line(f"Unsupported package manager: {PLATFORM_CONFIG['package_manager']}", "error")
+        return False
+
+def install_prerequisites_apt(terminal, needs_password, password):
+    """Install prerequisites using apt (Ubuntu/Debian)"""
     # Update package list
     st.info("📦 Updating package list...")
     if needs_password:
@@ -331,20 +548,14 @@ def install_prerequisites():
         result = run_shell_command_with_output("sudo apt update", timeout=60)
     
     if not result['success']:
-        st.error(f"❌ Failed to update package list.")
+        st.error("❌ Failed to update package list.")
         terminal.add_line("Failed to update package list", "error")
         return False
     
     st.success("✅ Package list updated!")
     
     # Install system packages
-    packages = [
-        "ffmpeg",
-        "wget", 
-        "curl",
-        "python3-pip"
-    ]
-    
+    packages = PLATFORM_CONFIG['system_packages']
     st.info("🔧 Installing system packages...")
     all_packages = " ".join(packages)
     
@@ -370,44 +581,205 @@ def install_prerequisites():
     else:
         st.success("✅ All system packages installed!")
     
-    # Install yt-dlp via pipx (doesn't need sudo)
+    # Install yt-dlp
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pipx install yt-dlp", timeout=120)
+    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning(f"Failed to install yt-dlp via pipx, trying pip3...")
-        terminal.add_line("Trying pip3 for yt-dlp installation...", "info")
-        # Try with pip3 as fallback
-        result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
-        if not result['success']:
-            st.warning(f"Failed to install yt-dlp via pip3")
-            terminal.add_line("Failed to install yt-dlp", "error")
-        else:
-            st.success("✅ yt-dlp installed via pip3!")
+        st.warning("Failed to install yt-dlp via pip3")
+        terminal.add_line("Failed to install yt-dlp", "error")
     else:
-        st.success("✅ yt-dlp installed via pipx!")
+        st.success("✅ yt-dlp installed!")
+        terminal.add_line("yt-dlp installed successfully", "info")
     
-    terminal.add_line("Prerequisites installation completed!", "info")
+    terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
-    st.info("🔄 **Tip**: Click 'Check System' to verify what was installed successfully.")
-    
     return True
 
-def detect_hardware_acceleration():
-    """Detect available hardware acceleration using shell commands"""
+def install_prerequisites_dnf(terminal, needs_password, password):
+    """Install prerequisites using dnf (Fedora/RHEL/CentOS)"""
+    # Update package list
+    st.info("📦 Updating package list...")
+    if needs_password:
+        result = run_sudo_command_with_password("dnf update -y", password, timeout=60)
+    else:
+        result = run_shell_command_with_output("sudo dnf update -y", timeout=60)
+    
+    if not result['success']:
+        st.warning("⚠️ Package list update failed, continuing...")
+    
+    # Install system packages
+    packages = PLATFORM_CONFIG['system_packages']
+    st.info("🔧 Installing system packages...")
+    all_packages = " ".join(packages)
+    
+    if needs_password:
+        result = run_sudo_command_with_password(f"dnf install -y {all_packages}", password, timeout=300)
+    else:
+        result = run_shell_command_with_output(f"sudo dnf install -y {all_packages}", timeout=300)
+    
+    if not result['success']:
+        st.warning("⚠️ Some system packages may have failed to install. Trying individual packages...")
+        for package in packages:
+            st.info(f"Installing {package}...")
+            if needs_password:
+                result = run_sudo_command_with_password(f"dnf install -y {package}", password, timeout=60)
+            else:
+                result = run_shell_command_with_output(f"sudo dnf install -y {package}", timeout=60)
+            if not result['success']:
+                st.warning(f"Failed to install {package}")
+            else:
+                st.success(f"✅ {package} installed!")
+    else:
+        st.success("✅ All system packages installed!")
+    
+    # Install yt-dlp
+    st.info("🎥 Installing yt-dlp...")
+    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip3")
+    else:
+        st.success("✅ yt-dlp installed!")
+    
+    terminal.add_line("Linux prerequisites installation completed!", "info")
+    st.success("🎉 Prerequisites installation completed!")
+    return True
+
+def install_prerequisites_pacman(terminal, needs_password, password):
+    """Install prerequisites using pacman (Arch Linux)"""
+    # Update package list
+    st.info("📦 Updating package list...")
+    if needs_password:
+        result = run_sudo_command_with_password("pacman -Sy", password, timeout=60)
+    else:
+        result = run_shell_command_with_output("sudo pacman -Sy", timeout=60)
+    
+    if not result['success']:
+        st.warning("⚠️ Package list update failed, continuing...")
+    
+    # Install system packages
+    packages = PLATFORM_CONFIG['system_packages']
+    st.info("🔧 Installing system packages...")
+    all_packages = " ".join(packages)
+    
+    if needs_password:
+        result = run_sudo_command_with_password(f"pacman -S --noconfirm {all_packages}", password, timeout=300)
+    else:
+        result = run_shell_command_with_output(f"sudo pacman -S --noconfirm {all_packages}", timeout=300)
+    
+    if not result['success']:
+        st.warning("⚠️ Some system packages may have failed to install. Trying individual packages...")
+        for package in packages:
+            st.info(f"Installing {package}...")
+            if needs_password:
+                result = run_sudo_command_with_password(f"pacman -S --noconfirm {package}", password, timeout=60)
+            else:
+                result = run_shell_command_with_output(f"sudo pacman -S --noconfirm {package}", timeout=60)
+            if not result['success']:
+                st.warning(f"Failed to install {package}")
+            else:
+                st.success(f"✅ {package} installed!")
+    else:
+        st.success("✅ All system packages installed!")
+    
+    # Install yt-dlp
+    st.info("🎥 Installing yt-dlp...")
+    result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip")
+    else:
+        st.success("✅ yt-dlp installed!")
+    
+    terminal.add_line("Linux prerequisites installation completed!", "info")
+    st.success("🎉 Prerequisites installation completed!")
+    return True
+
+def install_prerequisites_windows(terminal):
+    """Install prerequisites on Windows using Chocolatey"""
+    st.info("🪟 Installing prerequisites on Windows...")
+    
+    # Check if Chocolatey is installed
+    choco_check = run_shell_command("choco --version", timeout=5)
+    if not choco_check['success']:
+        st.warning("⚠️ Chocolatey not found. Please install it from https://chocolatey.org/install")
+        terminal.add_line("Chocolatey not found", "error")
+        return False
+    
+    # Install packages via Chocolatey
+    packages = PLATFORM_CONFIG['system_packages']
+    st.info("🔧 Installing system packages via Chocolatey...")
+    
+    for package in packages:
+        st.info(f"Installing {package}...")
+        result = run_shell_command_with_output(f"choco install -y {package}", timeout=120)
+        
+        if not result['success']:
+            st.warning(f"Failed to install {package}")
+            terminal.add_line(f"Failed to install {package}", "error")
+        else:
+            st.success(f"✅ {package} installed!")
+            terminal.add_line(f"Successfully installed {package}", "info")
+    
+    # Install yt-dlp
+    st.info("🎥 Installing yt-dlp...")
+    result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip")
+        terminal.add_line("Failed to install yt-dlp", "error")
+    else:
+        st.success("✅ yt-dlp installed!")
+        terminal.add_line("yt-dlp installed successfully", "info")
+    
+    terminal.add_line("Windows prerequisites installation completed!", "info")
+    st.success("🎉 Prerequisites installation completed!")
+    return True
+
+def detect_hardware_acceleration() -> Dict[str, bool]:
+    """Detect available hardware acceleration using shell commands.
+    
+    Returns:
+        Dict mapping acceleration types to their availability status.
+    """
     acceleration = {
         'nvenc': False,
         'qsv': False,
         'vaapi': False,
+        'videotoolbox': False,  # VideoToolbox uses Metal GPU on macOS
         'cpu': True
     }
+    
+    # Check FFmpeg hardware acceleration methods
+    hwaccel_result = run_shell_command("ffmpeg -hide_banner -hwaccels 2>/dev/null")
+    if hwaccel_result['success']:
+        hwaccels = hwaccel_result['stdout']
+        
+        # Check for VideoToolbox (macOS) - uses Metal GPU
+        if 'videotoolbox' in hwaccels and PLATFORM_CONFIG['is_macos']:
+            acceleration['videotoolbox'] = True
     
     # Check FFmpeg encoders
     result = run_shell_command("ffmpeg -hide_banner -encoders 2>/dev/null")
     if result['success']:
         encoders = result['stdout']
+        
+        # NVIDIA NVENC (Linux/Windows)
         acceleration['nvenc'] = 'h264_nvenc' in encoders or 'hevc_nvenc' in encoders
+        
+        # Intel QSV (Linux/Windows)
         acceleration['qsv'] = 'h264_qsv' in encoders or 'hevc_qsv' in encoders
+        
+        # VA-API (Linux)
         acceleration['vaapi'] = 'h264_vaapi' in encoders or 'hevc_vaapi' in encoders
+        
+        # VideoToolbox (macOS) - verify encoders are available
+        if PLATFORM_CONFIG['is_macos']:
+            acceleration['videotoolbox'] = acceleration['videotoolbox'] and ('h264_videotoolbox' in encoders or 'hevc_videotoolbox' in encoders)
+    
+    # Check for Metal filters (macOS)
+    if PLATFORM_CONFIG['is_macos']:
+        filters_result = run_shell_command("ffmpeg -hide_banner -filters 2>/dev/null")
+        if filters_result['success']:
+            filters = filters_result['stdout']
+            # Metal is automatically available through VideoToolbox on macOS
     
     # Test NVIDIA GPU availability (not just nvidia-smi)
     if acceleration['nvenc']:
@@ -415,6 +787,12 @@ def detect_hardware_acceleration():
         test_result = run_shell_command("ffmpeg -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -c:v h264_nvenc -f null - 2>&1")
         if not test_result['success'] or 'No capable devices found' in test_result['stderr']:
             acceleration['nvenc'] = False
+    
+    # Test VideoToolbox on macOS
+    if acceleration['videotoolbox'] and PLATFORM_CONFIG['is_macos']:
+        test_result = run_shell_command("ffmpeg -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -c:v h264_videotoolbox -q:v 20 -f null - 2>&1")
+        if not test_result['success'] or 'No capable devices found' in test_result['stderr']:
+            acceleration['videotoolbox'] = False
     
     return acceleration
 
@@ -1436,6 +1814,9 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
         if acceleration['nvenc']:
             encoder = "hevc_nvenc"
             encoder_opts = f"-c:v {encoder} -preset fast -cq {quality}"
+        elif acceleration['videotoolbox'] and PLATFORM_CONFIG['is_macos']:
+            encoder = "hevc_videotoolbox"
+            encoder_opts = f"-hwaccel videotoolbox -c:v {encoder} -q:v {quality} -prio_speed 1 -spatial_aq 1 -power_efficient 0"
         elif acceleration['qsv']:
             encoder = "hevc_qsv"
             encoder_opts = f"-c:v {encoder} -preset fast -global_quality {quality}"
@@ -1450,6 +1831,13 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
         encoder_opts = f"-c:v libx264 -preset fast -crf {quality}"
     elif "nvenc" in preset:
         encoder_opts = f"-c:v {preset.replace('h264_', 'h264_').replace('h265_', 'hevc_')} -preset fast -cq {quality}"
+    elif "videotoolbox" in preset:
+        if "h264" in preset:
+            encoder_opts = f"-hwaccel videotoolbox -c:v h264_videotoolbox -q:v {quality} -prio_speed 1 -spatial_aq 1 -power_efficient 0"
+        elif "h265" in preset or "hevc" in preset:
+            encoder_opts = f"-hwaccel videotoolbox -c:v hevc_videotoolbox -q:v {quality} -prio_speed 1 -spatial_aq 1 -power_efficient 0"
+        else:
+            encoder_opts = f"-hwaccel videotoolbox -c:v hevc_videotoolbox -q:v {quality} -prio_speed 1 -spatial_aq 1 -power_efficient 0"
     elif "qsv" in preset:
         encoder_opts = f"-c:v {preset.replace('h265_', 'hevc_')} -preset fast -global_quality {quality}"
     elif "vaapi" in preset:
@@ -1466,7 +1854,13 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
     
     # Build FFmpeg command
     output_path = os.path.join(download_dir, output_file)
-    cmd = f"ffmpeg -y -f concat -safe 0 -i '{list_file}' {encoder_opts} -c:a copy '{output_path}'"
+    
+    # For VideoToolbox, hwaccel needs to come before input
+    if "videotoolbox" in encoder_opts:
+        # Use Metal-optimized VideoToolbox with additional GPU acceleration
+        cmd = f"ffmpeg -y -hwaccel videotoolbox -f concat -safe 0 -i '{list_file}' {encoder_opts.replace('-hwaccel videotoolbox ', '')} -c:a copy -threads 0 '{output_path}'"
+    else:
+        cmd = f"ffmpeg -y -f concat -safe 0 -i '{list_file}' {encoder_opts} -c:a copy '{output_path}'"
     
     terminal.add_line(f"Using encoder: {encoder_opts}", "info")
     terminal.add_line(f"Output file: {output_path}", "info")
@@ -1475,11 +1869,11 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
     result = run_shell_command_with_output(cmd, cwd=download_dir, timeout=3600)
     
     # If hardware acceleration failed, try CPU fallback
-    if not result['success'] and ('No capable devices found' in result['stderr'] or 'OpenEncodeSessionEx failed' in result['stderr']):
+    if not result['success'] and ('No capable devices found' in result['stderr'] or 'OpenEncodeSessionEx failed' in result['stderr'] or 'videotoolbox' in result['stderr'].lower()):
         terminal.add_line("Hardware acceleration failed, trying CPU fallback...", "warning")
         
         # Fallback to CPU encoding
-        if preset == "auto" or "nvenc" in preset or "qsv" in preset or "vaapi" in preset:
+        if preset == "auto" or "nvenc" in preset or "qsv" in preset or "vaapi" in preset or "videotoolbox" in preset:
             if "h264" in preset or preset == "auto":
                 fallback_cmd = f"ffmpeg -y -f concat -safe 0 -i '{list_file}' -c:v libx264 -preset fast -crf {quality} -c:a copy '{output_path}'"
             else:
@@ -1528,6 +1922,16 @@ def encode_videos_direct(download_dir, output_file, preset="auto", quality="25",
                         pass
         except Exception as e:
             terminal.add_line(f"Final outputs retention warning: {e}", "warning")
+    
+    # Remove macOS quarantine attribute to prevent security warnings
+    if result['success'] and PLATFORM_CONFIG['is_macos']:
+        output_path = os.path.join(download_dir, output_file)
+        if os.path.exists(output_path):
+            try:
+                subprocess.run(f"xattr -d com.apple.quarantine '{output_path}'", shell=True, capture_output=True)
+                terminal.add_line("🔓 Removed macOS quarantine attribute", "info")
+            except:
+                pass  # Ignore if xattr fails
     
     return result['success'], result['stderr']
 
@@ -1674,6 +2078,8 @@ def main():
                 st.write(f"- NVIDIA NVENC: {'✓' if acceleration['nvenc'] else '✗'}")
                 st.write(f"- Intel QSV: {'✓' if acceleration['qsv'] else '✗'}")
                 st.write(f"- VA-API: {'✓' if acceleration['vaapi'] else '✗'}")
+                if PLATFORM_CONFIG['is_macos']:
+                    st.write(f"- VideoToolbox + Metal (macOS): {'✓' if acceleration['videotoolbox'] else '✗'}")
                 st.write(f"- CPU: ✓")
         
         with col2:
@@ -2101,6 +2507,8 @@ def main():
                 hw_info.append("⚡ Intel QSV")
             if acceleration['vaapi']:
                 hw_info.append("🔧 VA-API")
+            if acceleration['videotoolbox'] and PLATFORM_CONFIG['is_macos']:
+                hw_info.append("🍎 VideoToolbox + Metal GPU (macOS)")
             hw_info.append("🖥️ CPU")
             
             st.info(f"Available encoders: {', '.join(hw_info)}")
@@ -2116,6 +2524,8 @@ def main():
                     preset_options.extend(["h264_qsv", "h265_qsv"])
                 if acceleration['vaapi']:
                     preset_options.extend(["h264_vaapi", "h265_vaapi"])
+                if acceleration['videotoolbox'] and PLATFORM_CONFIG['is_macos']:
+                    preset_options.extend(["h264_videotoolbox", "h265_videotoolbox"])
                 preset_options.extend(["h264_cpu", "h265_cpu"])
                 
                 preset = st.selectbox(

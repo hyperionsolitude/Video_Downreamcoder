@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2025-01-27
+
+### 🚀 Performance & Optimization
+- **Enhanced Metal GPU Support**: Optimized VideoToolbox configuration for maximum Apple Silicon utilization
+- **Improved Type Hints**: Added comprehensive type annotations for better code maintainability
+- **Better Error Handling**: Enhanced error messages and fallback mechanisms
+- **Code Quality**: Improved imports organization and code structure
+
+### 🔧 macOS Improvements
+- **Security Integration**: Automatic quarantine attribute removal for generated video files
+- **Metal Presets**: Added dedicated h264_metal and h265_metal presets for maximum GPU usage
+- **Hardware Optimization**: Enhanced VideoToolbox parameters (-prio_speed, -spatial_aq, -power_efficient)
+
+### 📚 Documentation & Setup
+- **Enhanced README**: Added badges, better structure, and comprehensive feature descriptions
+- **Improved Setup Scripts**: Better error handling, colored output, and cross-platform compatibility
+- **Requirements Optimization**: Pinned package versions for better stability
+- **Git Integration**: Added comprehensive .gitignore for better repository management
+
+### 🛠️ Developer Experience
+- **Code Organization**: Improved function signatures and documentation
+- **Platform Detection**: Enhanced cross-platform compatibility detection
+- **Setup Scripts**: Better logging and error reporting in installation scripts
+
 ## [2.1.0] - 2025-09-19
 
 ### ✨ New Features
