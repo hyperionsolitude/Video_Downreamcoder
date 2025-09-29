@@ -260,6 +260,11 @@ def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=T
     # Ensure terminal_output exists in session state
     if 'terminal_output' not in st.session_state:
         st.session_state.terminal_output = TerminalOutput()
+    # Ensure active process list and stop flag exist
+    if 'active_download_processes' not in st.session_state:
+        st.session_state.active_download_processes = []
+    if 'stop_downloads' not in st.session_state:
+        st.session_state['stop_downloads'] = False
     
     terminal = st.session_state.terminal_output
     
@@ -277,11 +282,23 @@ def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=T
             bufsize=1,
             universal_newlines=True
         )
+        # Track this process so we can stop it later
+        try:
+            st.session_state.active_download_processes.append(process)
+        except Exception:
+            pass
         
         stdout_lines = []
         
         # Read output line by line
         while True:
+            # Check for stop request
+            if st.session_state.get('stop_downloads'):
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                break
             output = process.stdout.readline()
             if output == '' and process.poll() is not None:
                 break
@@ -291,7 +308,19 @@ def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=T
                 if show_in_terminal:
                     terminal.add_line(line, "output")
         
-        process.wait(timeout=timeout)
+        try:
+            process.wait(timeout=timeout)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        
+        # Remove from active list
+        try:
+            st.session_state.active_download_processes = [p for p in st.session_state.active_download_processes if p is not process]
+        except Exception:
+            pass
         
         return {
             'success': process.returncode == 0,
@@ -974,16 +1003,59 @@ def download_all_files(files, selected, download_dir, status_dict):
         if 'terminal_output' not in st.session_state:
             st.session_state.terminal_output = TerminalOutput()
         
+        # Helper to get remote size for accurate progress/ETA
+        def get_remote_file_size(url):
+            """Try HEAD first; if missing, try Range GET to read Content-Range total."""
+            try:
+                import urllib.request
+                import re as _re
+                # Attempt HEAD
+                class HeadRequest(urllib.request.Request):
+                    def get_method(self):
+                        return "HEAD"
+                req = HeadRequest(url, headers={"User-Agent": "Mozilla/5.0"})
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        length = resp.headers.get('Content-Length') or resp.headers.get('content-length')
+                        if length and length.isdigit():
+                            return int(length)
+                except Exception:
+                    pass
+                # Fallback: Range GET bytes=0-0 to obtain Content-Range: bytes 0-0/total
+                get_req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Range": "bytes=0-0"
+                })
+                with urllib.request.urlopen(get_req, timeout=15) as resp2:
+                    cr = resp2.headers.get('Content-Range') or resp2.headers.get('content-range')
+                    if cr:
+                        # Expect format: bytes 0-0/12345
+                        m = _re.search(r"/\s*(\d+)\s*$", cr)
+                        if m:
+                            return int(m.group(1))
+                return 0
+            except Exception:
+                return 0
+
+        # Attempt to determine expected total size from server
+        expected_total_size = 0
+        try:
+            expected_total_size = get_remote_file_size(file['url'])
+        except Exception:
+            expected_total_size = 0
+
         # Start download with progress tracking
         import threading
         import time
         
         def update_progress():
-            """Update progress during download with speed and ETA calculation"""
+            """Update progress based on file size vs remote size with speed and ETA"""
             start_time = time.time()
             last_progress = 0
             last_size = 0
             last_update_time = start_time
+            last_ui_update = start_time
+            avg_speed = 0.0
             
             while status_dict[file_key]['status'] == 'downloading':
                 if os.path.exists(file_path):
@@ -995,31 +1067,34 @@ def download_all_files(files, selected, download_dir, status_dict):
                     if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
                         size_diff = current_size - last_size
                         time_diff = current_time - last_update_time
-                        speed = size_diff / time_diff if time_diff > 0 else 0
-                        
-                        # Estimate progress based on time elapsed (more realistic)
-                        # Assume average download takes 60 seconds for better estimation
-                        progress = min(95, int((elapsed / 60) * 100))
-                        
-                        # Calculate ETA based on current speed
-                        if speed > 0:
-                            # Estimate total size based on current progress
-                            estimated_total = current_size / (progress / 100) if progress > 0 else current_size * 2
-                            remaining = max(0, estimated_total - current_size)
-                            eta = remaining / speed if speed > 0 else 0
+                        instant_speed = size_diff / time_diff if time_diff > 0 else 0
+                        # Exponential moving average for smoother ETA
+                        if avg_speed == 0:
+                            avg_speed = instant_speed
                         else:
+                            avg_speed = 0.8 * avg_speed + 0.2 * instant_speed
+                        # Compute progress using known total size when available
+                        if expected_total_size and expected_total_size > 0:
+                            progress = int((current_size / expected_total_size) * 100)
+                            progress = max(0, min(progress, 99))  # cap at 99 until completion
+                            remaining_bytes = max(0, expected_total_size - current_size)
+                            eta = (remaining_bytes / avg_speed) if avg_speed > 0 else 0
+                        else:
+                            # Fallback when total size unknown: show bytes and speed, keep progress minimal
+                            progress = last_progress
                             eta = 0
                         
-                        # Only update if progress changed significantly (reduce flashing)
-                        if progress - last_progress >= 2 or progress == 95:
+                        # Update when at least 1% changed, on special markers, or at least once per second
+                        if (progress - last_progress >= 1) or progress in (0, 99) or (current_time - last_ui_update >= 1.0):
                             status_dict[file_key].update({
                                 'progress': progress,
                                 'downloaded': current_size,
-                                'speed': speed,
+                                'speed': avg_speed,
                                 'eta': eta,
                                 'elapsed': elapsed
                             })
                             last_progress = progress
+                            last_ui_update = current_time
                         
                         last_size = current_size
                         last_update_time = current_time
@@ -2358,6 +2433,28 @@ def main():
             
             with col_stop:
                 if st.button("⏹️ Stop Downloads", help="Stop all downloads"):
+                    # Signal stop to shell processes
+                    st.session_state['stop_downloads'] = True
+                    try:
+                        # Attempt to gracefully terminate any active processes
+                        for p in list(st.session_state.get('active_download_processes', [])):
+                            try:
+                                p.terminate()
+                            except Exception:
+                                pass
+                        # Small delay then force kill leftovers
+                        import time as _t
+                        _t.sleep(0.3)
+                        for p in list(st.session_state.get('active_download_processes', [])):
+                            try:
+                                if p.poll() is None:
+                                    p.kill()
+                            except Exception:
+                                pass
+                        # Clear active list
+                        st.session_state['active_download_processes'] = []
+                    except Exception:
+                        pass
                     st.session_state['is_downloading'] = False
                     st.warning("Downloads stopped by user")
                     st.rerun()
