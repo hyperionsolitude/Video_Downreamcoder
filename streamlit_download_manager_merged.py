@@ -280,7 +280,8 @@ def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=T
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            start_new_session=True  # allow killing entire process group
         )
         # Track this process so we can stop it later
         try:
@@ -295,7 +296,11 @@ def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=T
             # Check for stop request
             if st.session_state.get('stop_downloads'):
                 try:
-                    process.terminate()
+                    import signal as _signal, os as _os
+                    try:
+                        _os.killpg(process.pid, _signal.SIGTERM)
+                    except Exception:
+                        process.terminate()
                 except Exception:
                     pass
                 break
@@ -1057,7 +1062,7 @@ def download_all_files(files, selected, download_dir, status_dict):
             last_ui_update = start_time
             avg_speed = 0.0
             
-            while status_dict[file_key]['status'] == 'downloading':
+            while status_dict[file_key]['status'] == 'downloading' and not st.session_state.get('stop_downloads'):
                 if os.path.exists(file_path):
                     current_size = os.path.getsize(file_path)
                     current_time = time.time()
@@ -2400,6 +2405,8 @@ def main():
                 elif max_concurrency == 0:
                     st.error("Downloads are disabled! Set max parallel downloads to a positive number or -1 for unlimited.")
                 else:
+                    # Reset stop flag before starting
+                    st.session_state['stop_downloads'] = False
                     st.session_state['is_downloading'] = True
                     files_to_download = [f for f in files if f['name'] in selected]
                     
@@ -2435,24 +2442,26 @@ def main():
                 if st.button("⏹️ Stop Downloads", help="Stop all downloads"):
                     # Signal stop to shell processes
                     st.session_state['stop_downloads'] = True
+                    # Primary stop mechanism: kill all wget downloads immediately
                     try:
-                        # Attempt to gracefully terminate any active processes
-                        for p in list(st.session_state.get('active_download_processes', [])):
-                            try:
-                                p.terminate()
-                            except Exception:
-                                pass
-                        # Small delay then force kill leftovers
-                        import time as _t
-                        _t.sleep(0.3)
-                        for p in list(st.session_state.get('active_download_processes', [])):
-                            try:
-                                if p.poll() is None:
-                                    p.kill()
-                            except Exception:
-                                pass
-                        # Clear active list
+                        import subprocess as _sp, time as _t
+                        _sp.run(["pkill", "-TERM", "-f", "wget --progress=bar:force"], check=False)
+                        _t.sleep(0.2)
+                        _sp.run(["pkill", "-KILL", "-f", "wget --progress=bar:force"], check=False)
+                    except Exception:
+                        pass
+                    # Cleanup any tracked processes
+                    try:
                         st.session_state['active_download_processes'] = []
+                    except Exception:
+                        pass
+                    # Mark in-progress items as stopped in status dict
+                    try:
+                        file_status = st.session_state.get('file_status', {})
+                        for name, info in list(file_status.items()):
+                            if info.get('status') in ['downloading', 'paused']:
+                                file_status[name] = {'status': 'stopped', 'progress': info.get('progress', 0)}
+                        st.session_state['file_status'] = file_status
                     except Exception:
                         pass
                     st.session_state['is_downloading'] = False
