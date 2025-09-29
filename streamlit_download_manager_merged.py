@@ -959,7 +959,8 @@ def download_all_files(files, selected, download_dir, status_dict):
         if file['name'] not in selected:
             return
             
-        file_path = os.path.join(download_dir, file['name'])
+        safe_name = normalize_filename(file['name'])
+        file_path = os.path.join(download_dir, safe_name)
         file_key = file['name']
         
         # Check if file already exists
@@ -1082,11 +1083,19 @@ async def prepare_streaming_urls(files, selected, download_dir):
             names.append(file['name'])
             
             # First, check if file exists locally (prioritize local files)
+            # Prefer normalized filenames for local path checks, matching download path
             local_file_path = os.path.join(download_dir, normalize_filename(file['name']))
+            alt_local_file_path = os.path.join(download_dir, file['name'])
             
+            candidate_path = None
             if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 1024:
+                candidate_path = local_file_path
+            elif os.path.exists(alt_local_file_path) and os.path.getsize(alt_local_file_path) > 1024:
+                candidate_path = alt_local_file_path
+            
+            if candidate_path is not None:
                 # File exists locally and has reasonable size - stream from local
-                abs_path = os.path.abspath(local_file_path)
+                abs_path = os.path.abspath(candidate_path)
                 file_uri = Path(abs_path).as_uri()
                 urls.append(file_uri)
                 terminal.add_line(f"Using local file: {file['name']}", "info")
