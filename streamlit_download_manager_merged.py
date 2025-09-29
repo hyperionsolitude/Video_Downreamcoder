@@ -2266,10 +2266,14 @@ def main():
         with col_select:
             if st.button("Select All", key="select_all_files"):
                 st.session_state['selected_files'] = [f['name'] for f in files]
+                # Keep the multiselect widget in sync so `selected` is populated
+                st.session_state['file_selector'] = st.session_state['selected_files']
                 st.rerun()
         with col_deselect:
             if st.button("Deselect All", key="deselect_all_files"):
                 st.session_state['selected_files'] = []
+                # Clear the multiselect widget state as well
+                st.session_state['file_selector'] = []
                 st.rerun()
         
         # File multiselect with better state management
