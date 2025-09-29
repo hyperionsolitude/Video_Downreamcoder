@@ -1086,7 +1086,9 @@ async def prepare_streaming_urls(files, selected, download_dir):
             
             if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 1024:
                 # File exists locally and has reasonable size - stream from local
-                urls.append(f"file://{os.path.abspath(local_file_path)}")
+                abs_path = os.path.abspath(local_file_path)
+                file_uri = Path(abs_path).as_uri()
+                urls.append(file_uri)
                 terminal.add_line(f"Using local file: {file['name']}", "info")
             else:
                 # File not downloaded or incomplete - stream from network
