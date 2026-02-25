@@ -30,11 +30,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import aiohttp
 import numpy as np
 import streamlit as st
 import yt_dlp
-import aiohttp
 from bs4 import BeautifulSoup, Tag
+
+from app.platform_utils import PLATFORM_CONFIG
+from app.shell_utils import (
+    TerminalOutput,
+    check_command_exists,
+    ensure_terminal,
+    run_shell_command,
+    run_shell_command_with_output,
+)
+from app.torrent import (
+    collect_torrent_video_files,
+    is_torrent_link,
+    start_torrent_download_with_aria2,
+    stream_torrent_via_webtorrent,
+)
 
 # Check for required dependencies and provide helpful error messages
 missing_deps = []
@@ -76,87 +91,6 @@ if missing_deps:
     st.write("**After installing dependencies, refresh this page.**")
     st.stop()
 
-# --- PLATFORM DETECTION ---
-def detect_platform() -> Dict[str, Any]:
-    """Detect the current platform and return platform-specific configurations.
-    
-    Returns:
-        Dict containing platform information including OS, architecture,
-        package manager, and platform-specific configurations.
-    """
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    
-    config = {
-        'os': system,
-        'arch': machine,
-        'is_macos': system == 'darwin',
-        'is_linux': system == 'linux',
-        'is_windows': system == 'windows',
-        'is_arm': 'arm' in machine or 'aarch64' in machine,
-        'is_apple_silicon': system == 'darwin' and ('arm' in machine or 'aarch64' in machine),
-        'package_manager': None,
-        'ffmpeg_install_cmd': None,
-        'system_packages': [],
-        'hardware_acceleration': []
-    }
-    
-    if config['is_macos']:
-        config['package_manager'] = 'homebrew'
-        config['ffmpeg_install_cmd'] = 'brew install ffmpeg'
-        config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
-        config['hardware_acceleration'] = ['videotoolbox', 'metal']
-        
-        # Check if Homebrew is installed
-        try:
-            subprocess.run(['brew', '--version'], capture_output=True, check=True)
-            config['homebrew_installed'] = True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            config['homebrew_installed'] = False
-            
-    elif config['is_linux']:
-        # Detect Linux distribution
-        try:
-            distro_info = distro.linux_distribution(full_distribution_name=False)
-            distro_name = distro_info[0].lower()
-            
-            if 'ubuntu' in distro_name or 'debian' in distro_name:
-                config['package_manager'] = 'apt'
-                config['ffmpeg_install_cmd'] = 'sudo apt install ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python3-pip', 'python3-venv', 'python3-dev', 'libffi-dev', 'libssl-dev']
-            elif 'fedora' in distro_name or 'rhel' in distro_name or 'centos' in distro_name:
-                config['package_manager'] = 'dnf'
-                config['ffmpeg_install_cmd'] = 'sudo dnf install ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python3-pip', 'python3-venv', 'python3-devel', 'libffi-devel', 'openssl-devel']
-            elif 'arch' in distro_name:
-                config['package_manager'] = 'pacman'
-                config['ffmpeg_install_cmd'] = 'sudo pacman -S ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python-pip', 'python-virtualenv']
-            else:
-                # Generic fallback
-                config['package_manager'] = 'unknown'
-                config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
-                
-        except Exception:
-            # Fallback if distro detection fails
-            config['package_manager'] = 'unknown'
-            config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
-            config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
-            
-        config['hardware_acceleration'] = ['nvenc', 'qsv', 'vaapi']
-        
-    elif config['is_windows']:
-        config['package_manager'] = 'chocolatey'
-        config['ffmpeg_install_cmd'] = 'choco install ffmpeg'
-        config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
-        config['hardware_acceleration'] = ['nvenc', 'qsv']
-    
-    return config
-
-# Initialize platform configuration
-PLATFORM_CONFIG = detect_platform()
-
 # --- CONFIG ---
 BASE_DOWNLOAD_DIR = os.path.expanduser("~/Downloads/StreamlitDownloads")
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm')
@@ -186,16 +120,6 @@ def is_youtube_url(url):
     parsed = urllib.parse.urlparse(url)
     return any(domain in parsed.netloc for domain in YOUTUBE_DOMAINS)
 
-def is_torrent_link(url: str) -> bool:
-    """Return True if the URL looks like a torrent (magnet or .torrent)."""
-    if not url:
-        return False
-    u = url.strip()
-    if u.lower().startswith(MAGNET_PREFIX):
-        return True
-    parsed = urllib.parse.urlparse(u)
-    return parsed.path.lower().endswith(TORRENT_EXTENSIONS)
-
 def normalize_filename(filename):
     """Normalize filename for safe filesystem usage"""
     filename = filename.replace('\n', '_').replace('\r', '_')
@@ -217,194 +141,6 @@ def get_folder_name_from_url(url, playlist_title=None):
         last_part = path_parts[-2] if len(path_parts) > 1 else None
     
     return last_part or "downloads"
-
-# --- TERMINAL OUTPUT SYSTEM ---
-class TerminalOutput:
-    def __init__(self):
-        self.output_queue = queue.Queue()
-        self.max_lines = 100
-        self.command_count = 0
-    
-    def add_line(self, text, cmd_type="info"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        
-        # Color coding based on type
-        if cmd_type == "command":
-            self.command_count += 1
-            formatted_text = f"<span style='color: #00ff00; font-weight: bold;'>[{timestamp}] $ {text}</span>"
-        elif cmd_type == "error":
-            formatted_text = f"<span style='color: #ff4444; font-weight: bold;'>[{timestamp}] ❌ {text}</span>"
-        elif cmd_type == "warning":
-            formatted_text = f"<span style='color: #ffaa00; font-weight: bold;'>[{timestamp}] ⚠️ {text}</span>"
-        elif cmd_type == "success":
-            formatted_text = f"<span style='color: #00ff88; font-weight: bold;'>[{timestamp}] ✅ {text}</span>"
-        elif cmd_type == "info":
-            formatted_text = f"<span style='color: #00aaff;'>[{timestamp}] ℹ️ {text}</span>"
-        else:
-            formatted_text = f"<span style='color: #ffffff;'>[{timestamp}] {text}</span>"
-        
-        self.output_queue.put(formatted_text)
-    
-    def get_output(self):
-        lines = []
-        while not self.output_queue.empty() and len(lines) < self.max_lines:
-            try:
-                lines.append(self.output_queue.get_nowait())
-            except queue.Empty:
-                break
-        return lines[-self.max_lines:]  # Keep only recent lines
-    
-    def clear(self):
-        """Clear the terminal output"""
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
-
-# Global terminal output instance
-if 'terminal_output' not in st.session_state:
-    st.session_state.terminal_output = TerminalOutput()
-
-# --- SHELL COMMAND FUNCTIONS ---
-def run_shell_command_with_output(cmd, cwd=None, timeout=300, show_in_terminal=True):
-    """Run shell command with real-time output capture"""
-    # Ensure terminal_output exists in session state
-    if 'terminal_output' not in st.session_state:
-        st.session_state.terminal_output = TerminalOutput()
-    # Ensure active process list and stop flag exist
-    if 'active_download_processes' not in st.session_state:
-        st.session_state.active_download_processes = []
-    if 'stop_downloads' not in st.session_state:
-        st.session_state['stop_downloads'] = False
-    
-    terminal = st.session_state.terminal_output
-    
-    if show_in_terminal:
-        terminal.add_line(f"$ {cmd}", "command")
-    
-    try:
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            start_new_session=True  # allow killing entire process group
-        )
-        # Track this process so we can stop it later
-        try:
-            st.session_state.active_download_processes.append(process)
-        except Exception:
-            pass
-        
-        stdout_lines = []
-        
-        # Read output line by line
-        while True:
-            # Check for stop request
-            if st.session_state.get('stop_downloads'):
-                try:
-                    import signal as _signal, os as _os
-                    try:
-                        _os.killpg(process.pid, _signal.SIGTERM)
-                    except Exception:
-                        process.terminate()
-                except Exception:
-                    pass
-                break
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                line = output.strip()
-                stdout_lines.append(line)
-                if show_in_terminal:
-                    terminal.add_line(line, "output")
-        
-        try:
-            process.wait(timeout=timeout)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
-        
-        # Remove from active list
-        try:
-            st.session_state.active_download_processes = [p for p in st.session_state.active_download_processes if p is not process]
-        except Exception:
-            pass
-        
-        return {
-            'success': process.returncode == 0,
-            'stdout': '\n'.join(stdout_lines),
-            'stderr': '',
-            'returncode': process.returncode
-        }
-        
-    except subprocess.TimeoutExpired:
-        if show_in_terminal:
-            terminal.add_line("Command timed out", "error")
-        return {
-            'success': False,
-            'stdout': '',
-            'stderr': 'Command timed out',
-            'returncode': -1
-        }
-    except Exception as e:
-        if show_in_terminal:
-            terminal.add_line(f"Error: {str(e)}", "error")
-        return {
-            'success': False,
-            'stdout': '',
-            'stderr': str(e),
-            'returncode': -1
-        }
-
-def run_shell_command(cmd, cwd=None, timeout=300, interactive=False):
-    """Run shell command and return result"""
-    if interactive:
-        # For interactive commands, use the output version
-        return run_shell_command_with_output(cmd, cwd, timeout, show_in_terminal=True)
-    else:
-        try:
-            result = subprocess.run(
-                cmd, 
-                shell=True, 
-                cwd=cwd, 
-                capture_output=True, 
-                text=True, 
-                timeout=timeout
-            )
-            return {
-                'success': result.returncode == 0,
-                'stdout': result.stdout,
-                'stderr': result.stderr,
-                'returncode': result.returncode
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                'success': False,
-                'stdout': '',
-                'stderr': 'Command timed out',
-                'returncode': -1
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'stdout': '',
-                'stderr': str(e),
-                'returncode': -1
-            }
-
-def check_command_exists(command):
-    """Check if a command exists in the system"""
-    result = run_shell_command(f"which {command}")
-    return result['success']
 
 def run_sudo_command_with_password(cmd, password, timeout=300):
     """Run sudo command with password provided via stdin"""
@@ -2387,14 +2123,16 @@ def main():
         
         with col_clear:
             if st.button("🗑️ Clear Terminal", help="Clear terminal output"):
-                st.session_state.terminal_output.clear()
+                terminal = ensure_terminal()
+                terminal.clear()
                 st.rerun()
         
         with col_auto:
             auto_refresh = st.checkbox("🔄 Auto-refresh (2s)", value=True, help="Automatically refresh terminal every 2 seconds")
         
-        # Get terminal output
-        terminal_output = st.session_state.terminal_output.get_output()
+        # Get terminal output (ensure terminal is initialized first)
+        terminal = ensure_terminal()
+        terminal_output = terminal.get_output()
         
         if terminal_output:
             # Create a styled terminal display
