@@ -104,7 +104,7 @@ def detect_platform() -> Dict[str, Any]:
     if config['is_macos']:
         config['package_manager'] = 'homebrew'
         config['ffmpeg_install_cmd'] = 'brew install ffmpeg'
-        config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+        config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
         config['hardware_acceleration'] = ['videotoolbox', 'metal']
         
         # Check if Homebrew is installed
@@ -123,33 +123,33 @@ def detect_platform() -> Dict[str, Any]:
             if 'ubuntu' in distro_name or 'debian' in distro_name:
                 config['package_manager'] = 'apt'
                 config['ffmpeg_install_cmd'] = 'sudo apt install ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python3-pip', 'python3-venv', 'python3-dev', 'libffi-dev', 'libssl-dev']
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python3-pip', 'python3-venv', 'python3-dev', 'libffi-dev', 'libssl-dev']
             elif 'fedora' in distro_name or 'rhel' in distro_name or 'centos' in distro_name:
                 config['package_manager'] = 'dnf'
                 config['ffmpeg_install_cmd'] = 'sudo dnf install ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python3-pip', 'python3-venv', 'python3-devel', 'libffi-devel', 'openssl-devel']
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python3-pip', 'python3-venv', 'python3-devel', 'libffi-devel', 'openssl-devel']
             elif 'arch' in distro_name:
                 config['package_manager'] = 'pacman'
                 config['ffmpeg_install_cmd'] = 'sudo pacman -S ffmpeg'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'python-pip', 'python-virtualenv']
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2', 'python-pip', 'python-virtualenv']
             else:
                 # Generic fallback
                 config['package_manager'] = 'unknown'
                 config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
-                config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+                config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
                 
         except Exception:
             # Fallback if distro detection fails
             config['package_manager'] = 'unknown'
             config['ffmpeg_install_cmd'] = 'Please install ffmpeg manually'
-            config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+            config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
             
         config['hardware_acceleration'] = ['nvenc', 'qsv', 'vaapi']
         
     elif config['is_windows']:
         config['package_manager'] = 'chocolatey'
         config['ffmpeg_install_cmd'] = 'choco install ffmpeg'
-        config['system_packages'] = ['ffmpeg', 'wget', 'curl']
+        config['system_packages'] = ['ffmpeg', 'wget', 'curl', 'aria2']
         config['hardware_acceleration'] = ['nvenc', 'qsv']
     
     return config
@@ -162,6 +162,8 @@ BASE_DOWNLOAD_DIR = os.path.expanduser("~/Downloads/StreamlitDownloads")
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm')
 AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.aac', '.ogg', '.wav', '.flac')
 YOUTUBE_DOMAINS = ("youtube.com", "youtu.be")
+TORRENT_EXTENSIONS = ('.torrent',)
+MAGNET_PREFIX = "magnet:?"
 MAX_CONCURRENT_DOWNLOADS = 4
 
 # --- UTILS ---
@@ -183,6 +185,16 @@ def remove_download_dir(folder_name):
 def is_youtube_url(url):
     parsed = urllib.parse.urlparse(url)
     return any(domain in parsed.netloc for domain in YOUTUBE_DOMAINS)
+
+def is_torrent_link(url: str) -> bool:
+    """Return True if the URL looks like a torrent (magnet or .torrent)."""
+    if not url:
+        return False
+    u = url.strip()
+    if u.lower().startswith(MAGNET_PREFIX):
+        return True
+    parsed = urllib.parse.urlparse(u)
+    return parsed.path.lower().endswith(TORRENT_EXTENSIONS)
 
 def normalize_filename(filename):
     """Normalize filename for safe filesystem usage"""
@@ -506,7 +518,7 @@ def install_prerequisites_macos(terminal):
         terminal.add_line("Homebrew installed successfully", "info")
     
     # Install packages via Homebrew
-    packages = ['ffmpeg', 'wget', 'curl']
+    packages = ['ffmpeg', 'wget', 'curl', 'aria2', 'node']
     st.info("🔧 Installing system packages via Homebrew...")
     
     for package in packages:
@@ -529,6 +541,16 @@ def install_prerequisites_macos(terminal):
     else:
         st.success("✅ yt-dlp installed!")
         terminal.add_line("yt-dlp installed successfully", "info")
+
+    # Install webtorrent-cli (for stream-only torrent playback)
+    st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
+    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result['success']:
+        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+    else:
+        st.success("✅ webtorrent-cli installed!")
+        terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("macOS prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -624,6 +646,16 @@ def install_prerequisites_apt(terminal, needs_password, password):
     else:
         st.success("✅ yt-dlp installed!")
         terminal.add_line("yt-dlp installed successfully", "info")
+
+    # Install webtorrent-cli (for stream-only torrent playback)
+    st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
+    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result['success']:
+        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+    else:
+        st.success("✅ webtorrent-cli installed!")
+        terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -673,6 +705,16 @@ def install_prerequisites_dnf(terminal, needs_password, password):
         st.warning("Failed to install yt-dlp via pip3")
     else:
         st.success("✅ yt-dlp installed!")
+
+    # Install webtorrent-cli (for stream-only torrent playback)
+    st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
+    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result['success']:
+        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+    else:
+        st.success("✅ webtorrent-cli installed!")
+        terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -722,6 +764,16 @@ def install_prerequisites_pacman(terminal, needs_password, password):
         st.warning("Failed to install yt-dlp via pip")
     else:
         st.success("✅ yt-dlp installed!")
+
+    # Install webtorrent-cli (for stream-only torrent playback)
+    st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
+    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result['success']:
+        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+    else:
+        st.success("✅ webtorrent-cli installed!")
+        terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -762,6 +814,16 @@ def install_prerequisites_windows(terminal):
     else:
         st.success("✅ yt-dlp installed!")
         terminal.add_line("yt-dlp installed successfully", "info")
+
+    # Install webtorrent-cli (for stream-only torrent playback)
+    st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
+    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result['success']:
+        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+    else:
+        st.success("✅ webtorrent-cli installed!")
+        terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Windows prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -969,6 +1031,83 @@ def download_file_with_shell(file_url, file_path, file_info=None, progress_callb
     # Use the output version to capture progress
     result = run_shell_command_with_output(cmd, timeout=600, show_in_terminal=True)
     return result['success'], result['stderr']
+
+def start_torrent_download_with_aria2(torrent_url: str, download_dir: str) -> bool:
+    """Start a torrent download using aria2c in a background thread and log to the terminal.
+    
+    This function requires the aria2c command to be available on the system.
+    """
+    os.makedirs(download_dir, exist_ok=True)
+
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    terminal = st.session_state.terminal_output
+
+    if not check_command_exists('aria2c'):
+        terminal.add_line("aria2c is not installed; cannot start torrent download.", "error")
+        return False
+
+    url = torrent_url.strip()
+    if not is_torrent_link(url):
+        terminal.add_line("The provided link does not look like a torrent or magnet link.", "error")
+        return False
+
+    # Basic aria2c invocation; seed-time=0 to stop when finished.
+    # --stop-with-process ties the aria2c lifetime to this Streamlit process,
+    # so if the app/server is killed, the torrent downloads are also terminated.
+    parent_pid = os.getpid()
+    cmd = f"aria2c --seed-time=0 --stop-with-process={parent_pid} --dir='{download_dir}' '{url}'"
+
+    def _run():
+        terminal.add_line(f"Starting aria2c torrent download into {download_dir}", "info")
+        # Allow up to 24 hours for long torrents
+        result = run_shell_command_with_output(cmd, timeout=86400, show_in_terminal=True)
+        if result['success']:
+            terminal.add_line("✅ Torrent download completed.", "success")
+        else:
+            terminal.add_line(f"❌ Torrent download exited with code {result['returncode']}", "error")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True
+
+def stream_torrent_via_webtorrent(torrent_ref: str) -> bool:
+    """Stream a torrent directly to VLC using webtorrent-cli, without saving a full local file.
+    
+    This requires the `webtorrent` command (webtorrent-cli) to be installed, e.g.:
+      npm install -g webtorrent-cli
+    """
+    # Ensure terminal_output exists in session state
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = TerminalOutput()
+    terminal = st.session_state.terminal_output
+
+    if not check_command_exists('webtorrent'):
+        terminal.add_line("webtorrent-cli is not installed; cannot stream torrent directly.", "error")
+        st.error("The `webtorrent` CLI is required to stream torrents without downloading. Install with: npm install -g webtorrent-cli")
+        return False
+
+    ref = torrent_ref.strip()
+    if not ref:
+        terminal.add_line("No torrent reference provided for streaming.", "error")
+        return False
+
+    # Launch webtorrent and let it open VLC with the stream.
+    # Run it in a background thread so the UI message appears immediately
+    # instead of only after VLC/webtorrent exit.
+    cmd = f"webtorrent \"{ref}\" --vlc"
+
+    def _run():
+        terminal.add_line("Starting webtorrent streaming to VLC...", "info")
+        # Long timeout to allow extended viewing sessions
+        result = run_shell_command_with_output(cmd, timeout=86400, show_in_terminal=True)
+        if result.get("returncode") not in (0, None):
+            terminal.add_line(f"webtorrent exited with code {result.get('returncode')}", "warning")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True
 
 def download_all_files(files, selected, download_dir, status_dict):
     """Download all selected files using shell commands with concurrency control"""
@@ -2305,6 +2444,165 @@ def main():
                 os.makedirs(st.session_state['base_download_dir'], exist_ok=True)
                 st.success(f"Base directory set to {st.session_state['base_download_dir']}")
     
+    # Torrent download section
+    with st.expander("Torrent Download (magnet or .torrent URL)", expanded=False):
+        torrent_url = st.text_input("Torrent / magnet link:", "", key="torrent_url_input")
+        torrent_folder = st.text_input(
+            "Torrent download folder name",
+            "torrents",
+            key="torrent_folder_name",
+            help="Subfolder inside the base download directory where torrent contents will be saved.",
+        )
+        uploaded_torrent = st.file_uploader(
+            "Or select a local .torrent file",
+            type=["torrent"],
+            key="torrent_file_upload",
+            help="If provided, the uploaded .torrent file will be saved and used for downloading."
+        )
+        # Compute current target directory for reuse below
+        base_dir = get_base_download_dir()
+        default_torrent_dir = os.path.join(base_dir, torrent_folder)
+        st.info(f"📂 Torrent files will be saved under: `{default_torrent_dir}`")
+        if st.button("Start Torrent Download", key="start_torrent_download"):
+            if not torrent_url:
+                st.warning("Please enter a torrent or magnet link.")
+            else:
+                os.makedirs(default_torrent_dir, exist_ok=True)
+                if not check_command_exists("aria2c"):
+                    st.error("The aria2c command is required for torrent downloads. For example on macOS: brew install aria2.")
+                else:
+                    started = start_torrent_download_with_aria2(torrent_url, default_torrent_dir)
+                    if started:
+                        st.success(f"Started torrent download into: {default_torrent_dir}. Check the Terminal Output section for live logs.")
+        if st.button("Start Torrent from Local .torrent", key="start_torrent_from_file"):
+            if not uploaded_torrent:
+                st.warning("Please select a .torrent file first.")
+            else:
+                os.makedirs(default_torrent_dir, exist_ok=True)
+                local_torrent_path = os.path.join(default_torrent_dir, uploaded_torrent.name)
+                try:
+                    with open(local_torrent_path, "wb") as f:
+                        f.write(uploaded_torrent.getbuffer())
+                except Exception as e:
+                    st.error(f"Failed to save uploaded .torrent file: {e}")
+                else:
+                    if not check_command_exists("aria2c"):
+                        st.error("The aria2c command is required for torrent downloads. For example on macOS: brew install aria2.")
+                    else:
+                        started = start_torrent_download_with_aria2(local_torrent_path, default_torrent_dir)
+                        if started:
+                            st.success(f"Started torrent download from local .torrent into: {default_torrent_dir}. Check the Terminal Output section for live logs.")
+        # Torrent control buttons: pause/resume/stop
+        col_t_pause, col_t_resume, col_t_stop = st.columns(3)
+        with col_t_pause:
+            if st.button("⏸️ Pause Torrent Activity", key="pause_torrent_downloads"):
+                try:
+                    import subprocess as _sp
+                    _sp.run(["pkill", "-STOP", "aria2c"], check=False)
+                    _sp.run(["pkill", "-STOP", "webtorrent"], check=False)
+                    st.session_state['torrent_paused'] = True
+                    st.info("Requested pause of aria2c/webtorrent torrent activity.")
+                except Exception:
+                    st.warning("Attempted to pause torrents, but an error occurred.")
+        with col_t_resume:
+            if st.button("▶️ Resume Torrent Activity", key="resume_torrent_downloads"):
+                try:
+                    import subprocess as _sp
+                    _sp.run(["pkill", "-CONT", "aria2c"], check=False)
+                    _sp.run(["pkill", "-CONT", "webtorrent"], check=False)
+                    st.session_state['torrent_paused'] = False
+                    st.info("Requested resume of aria2c/webtorrent torrent activity.")
+                except Exception:
+                    st.warning("Attempted to resume torrents, but an error occurred.")
+        with col_t_stop:
+            # Dedicated control to stop any running torrent downloads/streams
+            if st.button("⏹️ Stop Torrent Downloads", key="stop_torrent_downloads"):
+                # Signal stop to any shell-based downloads
+                st.session_state['stop_downloads'] = True
+                try:
+                    import subprocess as _sp, time as _t
+                    _sp.run(["pkill", "-TERM", "aria2c"], check=False)
+                    _t.sleep(0.2)
+                    _sp.run(["pkill", "-KILL", "aria2c"], check=False)
+                    _sp.run(["pkill", "-TERM", "webtorrent"], check=False)
+                    _t.sleep(0.2)
+                    _sp.run(["pkill", "-KILL", "webtorrent"], check=False)
+                except Exception:
+                    pass
+                st.info("Requested termination of aria2c/webtorrent torrent activity. Check the Terminal Output for confirmation.")
+
+        # Stop torrents and delete all torrent data for the configured folder
+        if st.button("🧹 Stop & Delete Torrent Data", key="stop_delete_torrent_data"):
+            st.session_state['stop_downloads'] = True
+            # First, stop any running torrent processes
+            try:
+                import subprocess as _sp, time as _t
+                _sp.run(["pkill", "-TERM", "aria2c"], check=False)
+                _t.sleep(0.2)
+                _sp.run(["pkill", "-KILL", "aria2c"], check=False)
+                _sp.run(["pkill", "-TERM", "webtorrent"], check=False)
+                _t.sleep(0.2)
+                _sp.run(["pkill", "-KILL", "webtorrent"], check=False)
+            except Exception:
+                pass
+            # Then remove all files under the torrent folder (but keep the folder itself)
+            if os.path.isdir(default_torrent_dir):
+                try:
+                    shutil.rmtree(default_torrent_dir)
+                    os.makedirs(default_torrent_dir, exist_ok=True)
+                    st.success(f"Stopped torrents and removed all torrent data under: {default_torrent_dir}")
+                except Exception as e:
+                    st.error(f"Stopped torrents but failed to fully delete torrent data: {e}")
+        # Stream completed torrent files in VLC (from disk)
+        if st.button("🎬 Stream Torrent Videos in VLC", key="stream_torrent_vlc"):
+            if not os.path.isdir(default_torrent_dir):
+                st.warning("No torrent download directory found yet. Start a torrent download first.")
+            else:
+                # Collect all video files under the torrent folder (recursive search)
+                video_paths = []
+                try:
+                    for root, dirs, files_in_dir in os.walk(default_torrent_dir):
+                        for entry in files_in_dir:
+                            if entry.lower().endswith(VIDEO_EXTENSIONS):
+                                full = os.path.join(root, entry)
+                                if os.path.isfile(full):
+                                    video_paths.append(full)
+                except Exception:
+                    video_paths = []
+                if not video_paths:
+                    st.warning("No video files found in the torrent download folder yet.")
+                else:
+                    names = [os.path.relpath(p, default_torrent_dir) for p in video_paths]
+                    urls = [Path(os.path.abspath(p)).as_uri() for p in video_paths]
+                    try:
+                        stream_all_in_vlc(urls, names)
+                        st.success(f"Launched VLC with {len(urls)} torrent video file(s) from {default_torrent_dir}.")
+                        st.info("Check your system for the VLC media player window.")
+                    except Exception as e:
+                        st.error(f"Failed to launch VLC for torrent videos: {e}")
+        # Stream torrent directly in VLC without keeping full local files
+        if st.button("🎬 Stream Torrent in VLC (no local file)", key="stream_torrent_direct_vlc"):
+            # Prefer explicit torrent URL if provided; otherwise fall back to uploaded .torrent
+            torrent_ref = None
+            if torrent_url and is_torrent_link(torrent_url):
+                torrent_ref = torrent_url.strip()
+            elif uploaded_torrent:
+                # Save the uploaded .torrent if not already saved, then use its path
+                os.makedirs(default_torrent_dir, exist_ok=True)
+                local_torrent_path = os.path.join(default_torrent_dir, uploaded_torrent.name)
+                try:
+                    with open(local_torrent_path, "wb") as f:
+                        f.write(uploaded_torrent.getbuffer())
+                    torrent_ref = local_torrent_path
+                except Exception as e:
+                    st.error(f"Failed to save uploaded .torrent file for streaming: {e}")
+            if not torrent_ref:
+                st.warning("Provide a magnet/.torrent URL or upload a .torrent file to stream.")
+            else:
+                started = stream_torrent_via_webtorrent(torrent_ref)
+                if started:
+                    st.info("Started torrent streaming via webtorrent; VLC should open automatically if installed.")
+    
     # URL input
     url = st.text_input("Enter video directory URL:", "")
     
@@ -2442,12 +2740,15 @@ def main():
                 if st.button("⏹️ Stop Downloads", help="Stop all downloads"):
                     # Signal stop to shell processes
                     st.session_state['stop_downloads'] = True
-                    # Primary stop mechanism: kill all wget downloads immediately
+                    # Primary stop mechanism: kill all wget/aria2c downloads immediately
                     try:
                         import subprocess as _sp, time as _t
                         _sp.run(["pkill", "-TERM", "-f", "wget --progress=bar:force"], check=False)
                         _t.sleep(0.2)
                         _sp.run(["pkill", "-KILL", "-f", "wget --progress=bar:force"], check=False)
+                        _sp.run(["pkill", "-TERM", "aria2c"], check=False)
+                        _t.sleep(0.2)
+                        _sp.run(["pkill", "-KILL", "aria2c"], check=False)
                     except Exception:
                         pass
                     # Cleanup any tracked processes
