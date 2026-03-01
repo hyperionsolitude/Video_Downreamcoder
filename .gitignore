@@ -167,6 +167,7 @@ ehthumbs.db
 Thumbs.db
 
 # IDE files
+scripts/
 .cursorrules
 .cursor/
 .vscode/
