@@ -268,11 +268,15 @@ def install_prerequisites_macos(terminal):
             st.success(f"✅ {package} installed!")
             terminal.add_line(f"Successfully installed {package}", "info")
     
-    # Install yt-dlp
+    # Install yt-dlp (try python3 -m pip first)
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    result = run_shell_command_with_output("python3 -m pip install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning("Failed to install yt-dlp via pip3")
+        result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    if not result['success']:
+        result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp. Try manually: python3 -m pip install --user yt-dlp")
         terminal.add_line("Failed to install yt-dlp", "error")
     else:
         st.success("✅ yt-dlp installed!")
@@ -280,13 +284,17 @@ def install_prerequisites_macos(terminal):
 
     # Install webtorrent-cli (for stream-only torrent playback)
     st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
-    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
-    if not result['success']:
-        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
-        terminal.add_line("Failed to install webtorrent-cli", "error")
+    if not check_command_exists("npm"):
+        st.warning("npm not found. Node should have been installed with system packages. Install manually if needed.")
+        terminal.add_line("npm not found; skipping webtorrent-cli", "error")
     else:
-        st.success("✅ webtorrent-cli installed!")
-        terminal.add_line("webtorrent-cli installed successfully", "info")
+        result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+        if not result['success']:
+            st.warning("Failed to install webtorrent-cli. Try manually: npm install -g webtorrent-cli")
+            terminal.add_line("Failed to install webtorrent-cli", "error")
+        else:
+            st.success("✅ webtorrent-cli installed!")
+            terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("macOS prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -373,25 +381,36 @@ def install_prerequisites_apt(terminal, needs_password, password):
     else:
         st.success("✅ All system packages installed!")
     
-    # Install yt-dlp
+    # Install yt-dlp (try python3 -m pip first — most reliable)
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    result = run_shell_command_with_output("python3 -m pip install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning("Failed to install yt-dlp via pip3")
+        result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    if not result['success']:
+        result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip. Try manually: python3 -m pip install --user yt-dlp")
         terminal.add_line("Failed to install yt-dlp", "error")
     else:
         st.success("✅ yt-dlp installed!")
         terminal.add_line("yt-dlp installed successfully", "info")
 
-    # Install webtorrent-cli (for stream-only torrent playback)
+    # Install webtorrent-cli (for stream-only torrent playback); on Linux use sudo for global install
     st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
-    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
-    if not result['success']:
-        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
-        terminal.add_line("Failed to install webtorrent-cli", "error")
+    if not check_command_exists("npm"):
+        st.warning("npm not found. Node.js/npm should have been installed with system packages above. Install manually if needed.")
+        terminal.add_line("npm not found; skipping webtorrent-cli", "error")
     else:
-        st.success("✅ webtorrent-cli installed!")
-        terminal.add_line("webtorrent-cli installed successfully", "info")
+        if needs_password and password:
+            result = run_sudo_command_with_password("npm install -g webtorrent-cli", password, timeout=300)
+        else:
+            result = run_shell_command_with_output("sudo npm install -g webtorrent-cli", timeout=300)
+        if not result['success']:
+            st.warning("Failed to install webtorrent-cli via npm. Try manually: sudo npm install -g webtorrent-cli")
+            terminal.add_line("Failed to install webtorrent-cli", "error")
+        else:
+            st.success("✅ webtorrent-cli installed!")
+            terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -434,23 +453,34 @@ def install_prerequisites_dnf(terminal, needs_password, password):
     else:
         st.success("✅ All system packages installed!")
     
-    # Install yt-dlp
+    # Install yt-dlp (try python3 -m pip first)
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    result = run_shell_command_with_output("python3 -m pip install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning("Failed to install yt-dlp via pip3")
+        result = run_shell_command_with_output("pip3 install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp via pip. Try manually: python3 -m pip install --user yt-dlp")
+        terminal.add_line("Failed to install yt-dlp", "error")
     else:
         st.success("✅ yt-dlp installed!")
+        terminal.add_line("yt-dlp installed successfully", "info")
 
-    # Install webtorrent-cli (for stream-only torrent playback)
+    # Install webtorrent-cli; on Linux use sudo for global install
     st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
-    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
-    if not result['success']:
-        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
-        terminal.add_line("Failed to install webtorrent-cli", "error")
+    if not check_command_exists("npm"):
+        st.warning("npm not found. Install Node.js/npm with system packages above or manually.")
+        terminal.add_line("npm not found; skipping webtorrent-cli", "error")
     else:
-        st.success("✅ webtorrent-cli installed!")
-        terminal.add_line("webtorrent-cli installed successfully", "info")
+        if needs_password and password:
+            result = run_sudo_command_with_password("npm install -g webtorrent-cli", password, timeout=300)
+        else:
+            result = run_shell_command_with_output("sudo npm install -g webtorrent-cli", timeout=300)
+        if not result['success']:
+            st.warning("Failed to install webtorrent-cli. Try manually: sudo npm install -g webtorrent-cli")
+            terminal.add_line("Failed to install webtorrent-cli", "error")
+        else:
+            st.success("✅ webtorrent-cli installed!")
+            terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -493,23 +523,34 @@ def install_prerequisites_pacman(terminal, needs_password, password):
     else:
         st.success("✅ All system packages installed!")
     
-    # Install yt-dlp
+    # Install yt-dlp (try python3 -m pip first)
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    result = run_shell_command_with_output("python3 -m pip install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning("Failed to install yt-dlp via pip")
+        result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp. Try manually: python3 -m pip install --user yt-dlp")
+        terminal.add_line("Failed to install yt-dlp", "error")
     else:
         st.success("✅ yt-dlp installed!")
+        terminal.add_line("yt-dlp installed successfully", "info")
 
-    # Install webtorrent-cli (for stream-only torrent playback)
+    # Install webtorrent-cli; on Linux use sudo for global install
     st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
-    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
-    if not result['success']:
-        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
-        terminal.add_line("Failed to install webtorrent-cli", "error")
+    if not check_command_exists("npm"):
+        st.warning("npm not found. Install Node.js/npm with system packages above or manually.")
+        terminal.add_line("npm not found; skipping webtorrent-cli", "error")
     else:
-        st.success("✅ webtorrent-cli installed!")
-        terminal.add_line("webtorrent-cli installed successfully", "info")
+        if needs_password and password:
+            result = run_sudo_command_with_password("npm install -g webtorrent-cli", password, timeout=300)
+        else:
+            result = run_shell_command_with_output("sudo npm install -g webtorrent-cli", timeout=300)
+        if not result['success']:
+            st.warning("Failed to install webtorrent-cli. Try manually: sudo npm install -g webtorrent-cli")
+            terminal.add_line("Failed to install webtorrent-cli", "error")
+        else:
+            st.success("✅ webtorrent-cli installed!")
+            terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Linux prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
@@ -541,11 +582,13 @@ def install_prerequisites_windows(terminal):
             st.success(f"✅ {package} installed!")
             terminal.add_line(f"Successfully installed {package}", "info")
     
-    # Install yt-dlp
+    # Install yt-dlp (try python3 -m pip first, then pip)
     st.info("🎥 Installing yt-dlp...")
-    result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    result = run_shell_command_with_output("python -m pip install --user yt-dlp", timeout=120)
     if not result['success']:
-        st.warning("Failed to install yt-dlp via pip")
+        result = run_shell_command_with_output("pip install --user yt-dlp", timeout=120)
+    if not result['success']:
+        st.warning("Failed to install yt-dlp. Try manually: pip install --user yt-dlp")
         terminal.add_line("Failed to install yt-dlp", "error")
     else:
         st.success("✅ yt-dlp installed!")
@@ -553,17 +596,70 @@ def install_prerequisites_windows(terminal):
 
     # Install webtorrent-cli (for stream-only torrent playback)
     st.info("🌐 Installing webtorrent-cli (for direct torrent streaming)...")
-    result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
-    if not result['success']:
-        st.warning("Failed to install webtorrent-cli via npm. You may need to install Node.js / npm manually.")
-        terminal.add_line("Failed to install webtorrent-cli", "error")
+    if not check_command_exists("npm"):
+        st.warning("npm not found. Node.js should have been installed with Chocolatey. Install manually if needed.")
+        terminal.add_line("npm not found; skipping webtorrent-cli", "error")
     else:
-        st.success("✅ webtorrent-cli installed!")
-        terminal.add_line("webtorrent-cli installed successfully", "info")
+        result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+        if not result['success']:
+            st.warning("Failed to install webtorrent-cli. Try manually: npm install -g webtorrent-cli")
+            terminal.add_line("Failed to install webtorrent-cli", "error")
+        else:
+            st.success("✅ webtorrent-cli installed!")
+            terminal.add_line("webtorrent-cli installed successfully", "info")
     
     terminal.add_line("Windows prerequisites installation completed!", "info")
     st.success("🎉 Prerequisites installation completed!")
     return True
+
+
+def install_torrent_options(terminal):
+    """Install only Node.js (if missing) and webtorrent-cli for torrent streaming. No sudo password flow."""
+    if 'terminal_output' not in st.session_state:
+        st.session_state.terminal_output = terminal
+    st.info("🌐 Installing torrent options (Node.js + webtorrent-cli)...")
+    terminal.add_line("Installing torrent options (Node.js + webtorrent-cli)...", "info")
+
+    # 1. Ensure Node/npm is available
+    if not check_command_exists("npm"):
+        if PLATFORM_CONFIG["is_macos"]:
+            result = run_shell_command_with_output("brew install node", timeout=120)
+        elif PLATFORM_CONFIG["is_linux"]:
+            pm = PLATFORM_CONFIG.get("package_manager")
+            if pm == "apt":
+                result = run_shell_command_with_output("sudo apt update && sudo apt install -y nodejs npm", timeout=120)
+            elif pm == "dnf":
+                result = run_shell_command_with_output("sudo dnf install -y nodejs npm", timeout=120)
+            elif pm == "pacman":
+                result = run_shell_command_with_output("sudo pacman -S --noconfirm nodejs npm", timeout=120)
+            else:
+                result = {"success": False}
+        elif PLATFORM_CONFIG["is_windows"]:
+            result = run_shell_command_with_output("choco install -y nodejs", timeout=120)
+        else:
+            result = {"success": False}
+        if not result.get("success"):
+            st.warning("Could not install Node.js automatically. Use **Install Prerequisites** (may require password) or install Node from https://nodejs.org")
+            terminal.add_line("Node.js installation failed", "error")
+            return False
+        st.success("✅ Node.js installed")
+        terminal.add_line("Node.js installed", "info")
+    else:
+        terminal.add_line("Node.js/npm already available", "info")
+
+    # 2. Install webtorrent-cli (on Linux, global install needs sudo)
+    if PLATFORM_CONFIG["is_linux"]:
+        result = run_shell_command_with_output("sudo npm install -g webtorrent-cli", timeout=300)
+    else:
+        result = run_shell_command_with_output("npm install -g webtorrent-cli", timeout=300)
+    if not result.get("success"):
+        st.warning("Failed to install webtorrent-cli. Try: npm install -g webtorrent-cli")
+        terminal.add_line("Failed to install webtorrent-cli", "error")
+        return False
+    st.success("✅ webtorrent-cli installed! You can stream torrents now.")
+    terminal.add_line("webtorrent-cli installed successfully", "info")
+    return True
+
 
 def detect_hardware_acceleration() -> Dict[str, bool]:
     """Detect available hardware acceleration using shell commands.
@@ -821,7 +917,10 @@ def stream_torrent_via_webtorrent(torrent_ref: str) -> bool:
 
     if not check_command_exists('webtorrent'):
         terminal.add_line("webtorrent-cli is not installed; cannot stream torrent directly.", "error")
-        st.error("The `webtorrent` CLI is required to stream torrents without downloading. Install with: npm install -g webtorrent-cli")
+        st.error("The `webtorrent` CLI is required to stream torrents without downloading.")
+        if st.button("Install torrent options (Node.js + webtorrent-cli)", key="install_webtorrent_btn"):
+            st.session_state['install_torrent_options_started'] = True
+            st.rerun()
         return False
 
     ref = torrent_ref.strip()
@@ -2005,6 +2104,17 @@ def main():
     if 'base_download_dir' not in st.session_state:
         st.session_state['base_download_dir'] = BASE_DOWNLOAD_DIR
     
+    # Run torrent-only install if user clicked "Install torrent options" (e.g. when webtorrent was missing)
+    if st.session_state.get('install_torrent_options_started', False):
+        if 'terminal_output' not in st.session_state:
+            st.session_state.terminal_output = TerminalOutput()
+        with st.spinner("Installing torrent options (Node.js + webtorrent-cli)..."):
+            ok = install_torrent_options(st.session_state.terminal_output)
+        st.session_state['install_torrent_options_started'] = False
+        if ok:
+            st.success("Torrent options installed. Try streaming again.")
+        st.rerun()
+    
     # Header controls
     col_head_left, col_head_right = st.columns([3, 1])
     with col_head_left:
@@ -2034,7 +2144,7 @@ def main():
         with col1:
             if st.button("Check System"):
                 st.write("**System Commands:**")
-                commands = ['ffmpeg', 'wget', 'curl', 'yt-dlp']
+                commands = ['ffmpeg', 'wget', 'curl', 'yt-dlp', 'aria2c', 'webtorrent']
                 for cmd in commands:
                     available = check_command_exists(cmd)
                     st.write(f"- {cmd}: {'✓' if available else '✗'}")

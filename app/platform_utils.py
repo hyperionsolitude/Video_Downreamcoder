@@ -50,6 +50,8 @@ def detect_platform() -> Dict[str, Any]:
                     "wget",
                     "curl",
                     "aria2",
+                    "nodejs",
+                    "npm",
                     "python3-pip",
                     "python3-venv",
                     "python3-dev",
@@ -64,6 +66,8 @@ def detect_platform() -> Dict[str, Any]:
                     "wget",
                     "curl",
                     "aria2",
+                    "nodejs",
+                    "npm",
                     "python3-pip",
                     "python3-venv",
                     "python3-devel",
@@ -78,24 +82,26 @@ def detect_platform() -> Dict[str, Any]:
                     "wget",
                     "curl",
                     "aria2",
+                    "nodejs",
+                    "npm",
                     "python-pip",
                     "python-virtualenv",
                 ]
             else:
                 config["package_manager"] = "unknown"
                 config["ffmpeg_install_cmd"] = "Please install ffmpeg manually"
-                config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2"]
+                config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2", "nodejs", "npm"]
         except Exception:
             config["package_manager"] = "unknown"
             config["ffmpeg_install_cmd"] = "Please install ffmpeg manually"
-            config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2"]
+            config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2", "nodejs", "npm"]
 
         config["hardware_acceleration"] = ["nvenc", "qsv", "vaapi"]
 
     elif config["is_windows"]:
         config["package_manager"] = "chocolatey"
         config["ffmpeg_install_cmd"] = "choco install ffmpeg"
-        config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2"]
+        config["system_packages"] = ["ffmpeg", "wget", "curl", "aria2", "nodejs"]
         config["hardware_acceleration"] = ["nvenc", "qsv"]
 
     return config
